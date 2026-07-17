@@ -4,6 +4,7 @@ import { actionReceipts, procurementRequests, purchaseOrders } from "../db/schem
 import { ZERO_MAX_PAY_USDC } from "./agent-policy";
 import { buyerIdentityConfigured } from "./procurement";
 import type { GroundworkRuntimeEnv } from "./runtime-env";
+import { createZeroClient, hasZeroCredentials } from "./zero-client";
 
 export async function releasePurchaseOrder(input: {
   db: ReturnType<typeof getDb>;
@@ -32,11 +33,10 @@ export async function releasePurchaseOrder(input: {
   if (!buyerIdentityConfigured(input.runtime)) {
     return { released: false, reasons: ["buyer_identity_incomplete"], emailMessageId: null, followupCallId: null };
   }
-  if (!input.runtime.ZERO_PRIVATE_KEY?.startsWith("0x")) {
+  if (!hasZeroCredentials(input.runtime)) {
     return { released: false, reasons: ["zero_signing_wallet_not_configured"], emailMessageId: null, followupCallId: null };
   }
-  const { ZeroClient } = await import("@zeroxyz/sdk");
-  const client = ZeroClient.fromPrivateKey(input.runtime.ZERO_PRIVATE_KEY as `0x${string}`);
+  const client = await createZeroClient(input.runtime);
   const emailSearch = await client.search("send transactional purchase order email with text body and reply-to", {
     limit: 5,
     availabilityStatus: "healthy",

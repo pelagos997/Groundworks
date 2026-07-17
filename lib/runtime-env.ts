@@ -24,6 +24,8 @@ export type GroundworkRuntimeEnv = {
   GROUNDWORK_PO_RELEASES_ENABLED?: string;
   NEXLA_FIELD_EVENTS_WEBHOOK_URL?: string;
   ZERO_PRIVATE_KEY?: string;
+  ZERO_ACCESS_TOKEN?: string;
+  ZERO_REFRESH_TOKEN?: string;
   ZERO_LIVE_ACTIONS?: string;
   SUPABASE_URL?: string;
   SUPABASE_SECRET_KEY?: string;

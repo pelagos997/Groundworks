@@ -11,6 +11,7 @@ import { evaluatePurchaseApproval, parseContacts } from "../lib/agent-policy.ts"
 import { parsePurchaseApproval } from "../lib/purchase-command.ts";
 import { rankQuotes } from "../lib/quote-comparison.ts";
 import { recordAgentPhoneWebhook } from "../lib/supabase-phone-data.ts";
+import { hasZeroCredentials } from "../lib/zero-client.ts";
 
 async function render(pathname = "/", init, bindings = {}) {
   globalThis.__CLOUDFLARE_TEST_ENV__ = bindings;
@@ -152,6 +153,13 @@ test("reports live contact readiness only when every secure binding exists", asy
   assert.equal(result.capabilities.mms, true);
   assert.equal(result.allowlistedContacts, 1);
   assert.equal(result.callDataStore.configured, false);
+});
+
+test("accepts either managed-session or private-key Zero credentials", () => {
+  assert.equal(hasZeroCredentials({}), false);
+  assert.equal(hasZeroCredentials({ ZERO_PRIVATE_KEY: "0x1234" }), true);
+  assert.equal(hasZeroCredentials({ ZERO_ACCESS_TOKEN: "access", ZERO_REFRESH_TOKEN: "refresh" }), true);
+  assert.equal(hasZeroCredentials({ ZERO_ACCESS_TOKEN: "access" }), false);
 });
 
 test("upserts redacted AgentPhone call records and transcript turns into Supabase", async () => {

@@ -3,6 +3,7 @@ import { getChatGPTUser } from "../../chatgpt-auth";
 import { AGENT_POLICY_MANIFEST, parseContacts } from "../../../lib/agent-policy";
 import { getRuntimeEnv } from "../../../lib/runtime-env";
 import { isSupabasePhoneStoreConfigured } from "../../../lib/supabase-phone-data";
+import { hasZeroCredentials } from "../../../lib/zero-client";
 
 export async function GET() {
   if (!(await getChatGPTUser())) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
@@ -22,7 +23,7 @@ export async function GET() {
     configured,
     capabilities: { voice: configured, sms: configured, mms: configured, privateMedia: Boolean(runtime.MEDIA) },
     allowlistedContacts: contacts.length,
-    zeroLiveActions: runtime.ZERO_LIVE_ACTIONS === "true" && Boolean(runtime.ZERO_PRIVATE_KEY),
+    zeroLiveActions: runtime.ZERO_LIVE_ACTIONS === "true" && hasZeroCredentials(runtime),
     callDataStore: {
       provider: "Supabase",
       configured: isSupabasePhoneStoreConfigured(runtime),

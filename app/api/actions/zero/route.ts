@@ -11,6 +11,7 @@ import {
   parseContacts,
 } from "../../../../lib/agent-policy";
 import { DEFAULT_PROJECT_ID, getRuntimeEnv } from "../../../../lib/runtime-env";
+import { createZeroClient, hasZeroCredentials } from "../../../../lib/zero-client";
 
 const ActionSchema = z.object({
   kind: z.literal("voice"),
@@ -47,12 +48,11 @@ export async function POST(request: Request) {
   if (policy.decision !== "allow" || !contact) {
     return NextResponse.json({ error: "Action blocked by policy.", policy }, { status: 403 });
   }
-  if (!runtime.ZERO_PRIVATE_KEY?.startsWith("0x")) {
+  if (!hasZeroCredentials(runtime)) {
     return NextResponse.json({ error: "Zero signing wallet is not configured." }, { status: 503 });
   }
 
-  const { ZeroClient } = await import("@zeroxyz/sdk");
-  const client = ZeroClient.fromPrivateKey(runtime.ZERO_PRIVATE_KEY as `0x${string}`);
+  const client = await createZeroClient(runtime);
   const search = await client.search("place an AI disclosed phone call to a construction field contact and return a transcript", {
     limit: 5,
     availabilityStatus: "healthy",

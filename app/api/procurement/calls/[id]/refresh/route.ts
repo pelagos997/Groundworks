@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getDb } from "../../../../../../db";
 import { vendorRfqCalls } from "../../../../../../db/schema";
 import { getRuntimeEnv } from "../../../../../../lib/runtime-env";
+import { createZeroClient, hasZeroCredentials } from "../../../../../../lib/zero-client";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const runtime = getRuntimeEnv();
@@ -10,7 +11,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!runtime.GROUNDWORK_PROCUREMENT_WEBHOOK_TOKEN || supplied !== runtime.GROUNDWORK_PROCUREMENT_WEBHOOK_TOKEN) {
     return NextResponse.json({ error: "Procurement webhook authentication required." }, { status: 401 });
   }
-  if (!runtime.ZERO_PRIVATE_KEY?.startsWith("0x")) {
+  if (!hasZeroCredentials(runtime)) {
     return NextResponse.json({ error: "Zero signing wallet is not configured." }, { status: 503 });
   }
   const { id } = await context.params;
@@ -18,8 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const [call] = await db.select().from(vendorRfqCalls).where(eq(vendorRfqCalls.id, id)).limit(1);
   if (!call?.externalCallId) return NextResponse.json({ error: "RFQ call not found or has no external call ID." }, { status: 404 });
 
-  const { ZeroClient } = await import("@zeroxyz/sdk");
-  const client = ZeroClient.fromPrivateKey(runtime.ZERO_PRIVATE_KEY as `0x${string}`);
+  const client = await createZeroClient(runtime);
   const search = await client.search("get StablePhone call status and transcript", {
     limit: 5,
     availabilityStatus: "healthy",

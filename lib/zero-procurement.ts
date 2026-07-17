@@ -10,6 +10,7 @@ import {
   type ProcurementDraft,
 } from "./procurement";
 import type { GroundworkRuntimeEnv } from "./runtime-env";
+import { createZeroClient, hasZeroCredentials } from "./zero-client";
 
 export type RfqBatchResult = {
   requestId: string;
@@ -54,12 +55,11 @@ export async function sourceRfqBatch(input: {
       .where((await import("drizzle-orm")).eq(procurementRequests.id, input.requestId));
     return { requestId: input.requestId, queued: 0, blocked: true, reasons: policy.reasons, calls: [] };
   }
-  if (!input.runtime.ZERO_PRIVATE_KEY?.startsWith("0x")) {
+  if (!hasZeroCredentials(input.runtime)) {
     return { requestId: input.requestId, queued: 0, blocked: true, reasons: ["zero_signing_wallet_not_configured"], calls: [] };
   }
 
-  const { ZeroClient } = await import("@zeroxyz/sdk");
-  const client = ZeroClient.fromPrivateKey(input.runtime.ZERO_PRIVATE_KEY as `0x${string}`);
+  const client = await createZeroClient(input.runtime);
   const search = await client.search("AI disclosed outbound business phone call with transcript", {
     limit: 5,
     availabilityStatus: "healthy",
