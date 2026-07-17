@@ -53,6 +53,7 @@ import {
   type ProcurementDraft,
 } from "../../../../lib/procurement";
 import { sourceRfqBatch } from "../../../../lib/zero-procurement";
+import { recordAgentPhoneWebhook } from "../../../../lib/supabase-phone-data";
 import { formatUsd, quoteSummary } from "../../../../lib/quote-comparison";
 import {
   releasePurchaseOrder,
@@ -84,6 +85,11 @@ export async function POST(request: Request) {
 
   const payload = parsed.data;
   const caller = getCaller(payload);
+  try {
+    await recordAgentPhoneWebhook({ runtime, webhookId, payload });
+  } catch (error) {
+    console.error("Supabase phone-data ingestion failed", error instanceof Error ? error.message : "unknown_error");
+  }
   const db = getDb();
   const payloadHash = await sha256Hex(rawBody);
   const inserted = await db.insert(webhookDeliveries).values({

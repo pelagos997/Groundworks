@@ -52,7 +52,9 @@ the verified server-side directory; inbound payloads cannot redirect a call.
 - **Inbound contact:** AgentPhone unified voice/SMS/MMS webhooks with HMAC
   verification, five-minute replay protection, and delivery idempotency.
 - **Persistence:** D1 stores conversations, events, approvals, policy decisions,
-  candidates, and Zero receipts. Private R2 stores validated field images.
+  candidates, and Zero receipts. Supabase stores the durable AgentPhone event,
+  call, transcript-turn, message, and sync-run data products. Private R2 stores
+  validated field images.
 - **Deployment:** Cloudflare-compatible worker build; Akash remains an optional
   container target for the planner service.
 
@@ -94,6 +96,27 @@ confirmation. SMS and MMS use the same allowlist and confirmation rules.
    `.agentphone-webhook-secret` file.
 6. Store that value as the hosted `AGENTPHONE_WEBHOOK_SECRET` secret and deploy
    the new environment revision.
+
+## Supabase call-data store
+
+The phone integration dual-writes verified AgentPhone events into Supabase while
+retaining D1 as the transactional policy and procurement ledger. Supabase is
+server-only: the migration enables RLS, grants no browser role access, removes
+media and recording URLs from event payloads, and includes a 90-day purge
+function.
+
+1. Create or select a Supabase project and apply
+   `supabase/migrations/20260717220000_groundwork_phone_operations.sql` through
+   the Supabase migration workflow.
+2. Set `SUPABASE_URL` and either `SUPABASE_SECRET_KEY` or the legacy
+   `SUPABASE_SERVICE_ROLE_KEY` as hosted secrets. Never use either secret in the
+   browser.
+3. Set a long random `GROUNDWORK_INTERNAL_API_TOKEN` hosted secret.
+4. AgentPhone webhooks are upserted automatically. To backfill the most recent
+   50 calls and messages, invoke `POST /api/sync/agentphone` with the internal
+   token as a Bearer credential.
+5. Schedule `select public.purge_expired_groundwork_phone_data();` according to
+   the project's retention policy.
 
 ## Agent authority
 

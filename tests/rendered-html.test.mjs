@@ -10,6 +10,7 @@ import {
 import { evaluatePurchaseApproval, parseContacts } from "../lib/agent-policy.ts";
 import { parsePurchaseApproval } from "../lib/purchase-command.ts";
 import { rankQuotes } from "../lib/quote-comparison.ts";
+import { recordAgentPhoneWebhook } from "../lib/supabase-phone-data.ts";
 
 async function render(pathname = "/", init, bindings = {}) {
   globalThis.__CLOUDFLARE_TEST_ENV__ = bindings;
@@ -150,6 +151,58 @@ test("reports live contact readiness only when every secure binding exists", asy
   assert.equal(result.configured, true);
   assert.equal(result.capabilities.mms, true);
   assert.equal(result.allowlistedContacts, 1);
+  assert.equal(result.callDataStore.configured, false);
+});
+
+test("upserts redacted AgentPhone call records and transcript turns into Supabase", async () => {
+  const originalFetch = globalThis.fetch;
+  const writes = [];
+  globalThis.fetch = async (url, init) => {
+    writes.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const status = await recordAgentPhoneWebhook({
+      runtime: {
+        SUPABASE_URL: "https://groundwork-test.supabase.co",
+        SUPABASE_SECRET_KEY: "sb_secret_test",
+        GROUNDWORK_PROJECT_ID: "pile_demo",
+        AGENTPHONE_NUMBER: "+19133495671",
+        AGENTPHONE_NUMBER_ID: "num_groundwork",
+      },
+      webhookId: "wh_call_001",
+      payload: {
+        event: "agent.call_ended",
+        channel: "voice",
+        timestamp: "2026-07-17T21:00:00.000Z",
+        agentId: "agt_groundwork",
+        data: {
+          callId: "call_001",
+          fromNumber: "+19135550123",
+          toNumber: "+19133495671",
+          direction: "inbound",
+          status: "completed",
+          mediaUrl: "https://agentphone.ai/private-recording",
+          transcripts: [
+            { role: "agent", content: "This is Groundwork, an AI assistant." },
+            { role: "caller", content: "We need ten twenty-foot HP12x53 sections." },
+          ],
+        },
+        conversationState: { disclosureAccepted: true, transcriptionConsent: true },
+        recentHistory: [],
+      },
+    });
+    assert.equal(status, "stored");
+    assert.equal(writes.length, 3);
+    assert.match(writes[0].url, /phone_webhook_events/);
+    assert.equal(writes[0].body[0].payload.data.mediaUrl, "[redacted]");
+    assert.match(writes[1].url, /phone_calls/);
+    assert.equal(writes[1].body[0].disclosure_given, true);
+    assert.match(writes[2].url, /phone_transcript_turns/);
+    assert.equal(writes[2].body.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("replan graph exposes each deterministic recovery scenario", async () => {
