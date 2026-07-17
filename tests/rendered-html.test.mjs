@@ -21,7 +21,7 @@ async function render(pathname = "/", init, bindings = {}) {
 }
 
 test("server-renders the Groundwork control room", async () => {
-  const response = await render();
+  const response = await render("/", { headers: { "oai-authenticated-user-email": "owner@example.com" } });
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
@@ -120,7 +120,7 @@ test("normalizes a caller-confirmed drilled-shaft event for Nexla", async () => 
 
 test("uses HeroUI and omits the disposable starter", async () => {
   const [page, css, packageJson] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/groundwork-dashboard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
