@@ -81,9 +81,11 @@ through the built worker.
 ## Live contact configuration
 
 Groundwork uses the official AgentPhone webhook contract at
-`/api/webhooks/agentphone`. Inbound voice has a three-step protocol: explicit
-AI/transcription consent, complete material request, and exact RFQ read-back
-confirmation. SMS and MMS use the same allowlist and confirmation rules.
+`/api/webhooks/agentphone`. Inbound voice is limited to pre-authorized contacts,
+opens with an audible AI/transcription disclosure, and immediately accepts a
+natural field report or material request. No spoken consent phrase is required.
+An exact RFQ read-back confirmation is still required before any vendor call.
+SMS and MMS use the same allowlist and confirmation rules.
 
 1. Provision an AgentPhone account, agent, and voice/SMS number.
 2. Add the server-only values documented in `.env.example`.

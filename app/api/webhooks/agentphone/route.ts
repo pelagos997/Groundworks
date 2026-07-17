@@ -143,22 +143,6 @@ export async function POST(request: Request) {
 
 async function handleVoice(input: HandlerInput): Promise<VoiceResponse> {
   const text = getWebhookText(input.payload);
-  if (!input.conversation.disclosureAccepted) {
-    if (!/\b(i consent|consent|i agree|agree)\b/i.test(text)) {
-      await input.db.update(contactConversations).set({ state: "awaiting_consent", updatedAt: new Date().toISOString() })
-        .where(eq(contactConversations.id, input.conversation.id));
-      return {
-        text: "This is Groundwork, an AI superintendent assistant. This call is transcribed for the project record. I can record field facts but cannot give engineering, safety, or means-and-methods direction. Say I consent to continue, or hang up.",
-      };
-    }
-    await input.db.update(contactConversations).set({
-      disclosureAccepted: true,
-      state: "collecting",
-      updatedAt: new Date().toISOString(),
-    }).where(eq(contactConversations.id, input.conversation.id));
-    return { text: "Thank you. Report a field condition, or tell me about a piling overrun and the exact extra material needed. I can solicit quotes after a complete read-back, but I cannot place an order without a written quote and authorized PO approval." };
-  }
-
   if (isProcurementIntent(text) || input.conversation.pendingProcurementJson) {
     return handleProcurementVoice(input, text);
   }
@@ -561,15 +545,26 @@ async function sendAgentPhoneReply(runtime: GroundworkRuntimeEnv, to: string, bo
 async function getOrCreateConversation(db: ReturnType<typeof getDb>, runtime: GroundworkRuntimeEnv, payload: HandlerInput["payload"], contact: FieldContact) {
   const externalId = getConversationId(payload);
   const [existing] = await db.select().from(contactConversations).where(eq(contactConversations.externalId, externalId)).limit(1);
-  if (existing) return existing;
+  if (existing) {
+    if (payload.channel === "voice" && !existing.disclosureAccepted) {
+      const state = existing.state === "awaiting_consent" ? "collecting" : existing.state;
+      await db.update(contactConversations).set({
+        disclosureAccepted: true,
+        state,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(contactConversations.id, existing.id));
+      return { ...existing, disclosureAccepted: true, state };
+    }
+    return existing;
+  }
   const [created] = await db.insert(contactConversations).values({
     id: `conv_${crypto.randomUUID().slice(0, 12)}`,
     projectId: projectId(runtime),
     provider: "agentphone",
     externalId,
     caller: contact.phone,
-    state: payload.channel === "voice" ? "awaiting_consent" : "collecting",
-    disclosureAccepted: payload.channel !== "voice",
+    state: "collecting",
+    disclosureAccepted: true,
   }).returning();
   return created;
 }

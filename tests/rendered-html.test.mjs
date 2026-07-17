@@ -168,6 +168,14 @@ test("keeps the outbound AI on the bounded RFQ checklist", () => {
   assert.match(task, /read back the captured commercial details/i);
 });
 
+test("lets pre-authorized voice callers report naturally after the audible disclosure", async () => {
+  const route = await readFile(new URL("../app/api/webhooks/agentphone/route.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(route, /say i consent/i);
+  assert.doesNotMatch(route, /awaiting_consent.*hang up/is);
+  assert.match(route, /state: "collecting"/);
+  assert.match(route, /disclosureAccepted: true/);
+});
+
 test("rejects an AgentPhone delivery with an invalid signature before processing", async () => {
   const response = await render(
     "/api/webhooks/agentphone",
