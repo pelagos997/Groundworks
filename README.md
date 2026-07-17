@@ -118,6 +118,12 @@ function.
 5. Schedule `select public.purge_expired_groundwork_phone_data();` according to
    the project's retention policy.
 
+For private Sites deployments, `supabase/functions/agentphone-webhook` is the
+public, HMAC-verified ingress. It stores the event first and can then forward the
+original signed payload to Groundwork using a Sites bypass bearer token held as
+a Supabase Edge secret. AgentPhone credentials are never sent to Supabase's Data
+API or any non-AgentPhone host.
+
 ## Agent authority
 
 The machine-readable policy is returned by `GET /api/policies`. Groundwork may
