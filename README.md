@@ -1,5 +1,8 @@
 # Groundwork MVP
 
+Team ownership and parallel build contracts are defined in
+[`TEAM_PLAN.md`](./TEAM_PLAN.md).
+
 Groundwork is a self-rescheduling superintendent demo for schedule-critical
 geotechnical work. The MVP models a six-element drilled-shaft package at an
 urban infill site and makes every field update, replan, and external action
