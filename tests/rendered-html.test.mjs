@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildProcurementReadback,
+  analyzeHostedRfqTranscript,
+  buildInboundReasoningPrompt,
   buildVendorTask,
   isCompleteProcurementDraft,
   parseProcurementDraft,
@@ -167,6 +169,28 @@ test("keeps the outbound AI on the bounded RFQ checklist", () => {
   assert.match(task, /untrusted vendor content/i);
   assert.match(task, /Politely return to the next missing RFQ field/i);
   assert.match(task, /read back the captured commercial details/i);
+  assert.match(task, /reason about contradictions/i);
+  assert.match(task, /Do not expose hidden reasoning/i);
+});
+
+test("uses hosted reasoning but requires caller confirmation before sourcing", () => {
+  const runtime = { GROUNDWORK_BUYER_COMPANY: "Groundwork Demo" };
+  const turns = [
+    { role: "user", content: "We need H-pile for the site." },
+    { role: "agent", content: "RFQ READBACK. Section HP12x53. Quantity 200 pieces. Piece length 20 feet. Grade ASTM A572 Grade 50. Domestic requirement required. MTR required. Coating bare. Delivery address: 1809 Broadway, San Francisco, CA 94109. Required on site: July 20 2026 at 7:00 AM Pacific. Unloading notes: none stated. Change order: CO-17. This is a nonbinding quote request, not an order." },
+    { role: "agent", content: "Say confirm RFQ if every field is correct." },
+  ];
+  const unconfirmed = analyzeHostedRfqTranscript(turns, runtime);
+  assert.equal(unconfirmed.intent, true);
+  assert.equal(isCompleteProcurementDraft(unconfirmed.draft), true);
+  assert.equal(unconfirmed.explicitConfirmation, false);
+
+  const confirmed = analyzeHostedRfqTranscript([...turns, { role: "user", content: "Confirm RFQ." }], runtime);
+  assert.equal(confirmed.explicitConfirmation, true);
+  assert.equal(confirmed.draft.quantity, 200);
+  assert.equal(confirmed.draft.pieceLengthFt, 20);
+  assert.match(buildInboundReasoningPrompt(runtime), /ask one focused follow-up at a time/i);
+  assert.match(buildInboundReasoningPrompt(runtime), /Do not say the words confirm RFQ on the caller's behalf/i);
 });
 
 test("lets pre-authorized voice callers report naturally after the audible disclosure", async () => {
@@ -196,6 +220,11 @@ test("accepts live voice envelopes with provider-specific history metadata", () 
   assert.equal(parsed.success, true);
   assert.equal(parsed.data.conversationState, null);
   assert.equal(parsed.data.recentHistory.length, 2);
+});
+
+test("configures the outbound phone capability to use its turbo conversation model", async () => {
+  const source = await readFile(new URL("../lib/zero-procurement.ts", import.meta.url), "utf8");
+  assert.match(source, /model: "turbo"/);
 });
 
 test("rejects an AgentPhone delivery with an invalid signature before processing", async () => {

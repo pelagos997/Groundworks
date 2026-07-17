@@ -43,6 +43,7 @@ import { runReplanGraph } from "../../../../lib/replan-graph";
 import { DEFAULT_PROJECT_ID, getRuntimeEnv, type GroundworkRuntimeEnv } from "../../../../lib/runtime-env";
 import {
   ProcurementDraftSchema,
+  analyzeHostedRfqTranscript,
   buildMissingProcurementPrompt,
   buildProcurementReadback,
   isCompleteProcurementDraft,
@@ -124,12 +125,19 @@ export async function POST(request: Request) {
       return NextResponse.json(response);
     }
 
-    if (payload.event === "agent.call_ended" || payload.event === "agent.reaction") {
+    if (payload.event === "agent.reaction") {
       await finishDelivery(db, webhookId, "recorded", { received: true });
       return NextResponse.json({ received: true });
     }
 
     const conversation = await getOrCreateConversation(db, runtime, payload, contact);
+    if (payload.event === "agent.call_ended") {
+      const response = runtime.GROUNDWORK_HOSTED_REASONING === "true"
+        ? await handleHostedCallEnded({ db, runtime, webhookId, payload, contact, conversation })
+        : { received: true, processed: false, reason: "hosted_reasoning_disabled" };
+      await finishDelivery(db, webhookId, "processed", response);
+      return NextResponse.json(response);
+    }
     const response = payload.channel === "voice"
       ? await handleVoice({ db, runtime, webhookId, payload, contact, conversation })
       : await handleMessage({ db, runtime, webhookId, payload, contact, conversation });
@@ -139,6 +147,47 @@ export async function POST(request: Request) {
     await finishDelivery(db, webhookId, "failed", { error: error instanceof Error ? error.message : "processing_failed" });
     return NextResponse.json({ error: "Inbound event could not be processed." }, { status: 500 });
   }
+}
+
+async function handleHostedCallEnded(input: HandlerInput) {
+  const rawTurns = Array.isArray(input.payload.data.transcript) ? input.payload.data.transcript : [];
+  const turns = rawTurns.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const turn = value as Record<string, unknown>;
+    const role = typeof turn.role === "string" ? turn.role : typeof turn.speaker === "string" ? turn.speaker : "unknown";
+    const content = typeof turn.content === "string" ? turn.content.trim() : typeof turn.text === "string" ? turn.text.trim() : "";
+    return content ? [{ role, content }] : [];
+  });
+  const analysis = analyzeHostedRfqTranscript(turns, input.runtime);
+  if (analysis.intent) {
+    await input.db.update(contactConversations).set({
+      pendingProcurementJson: JSON.stringify(analysis.draft),
+      state: isCompleteProcurementDraft(analysis.draft) ? "awaiting_rfq_confirmation" : "collecting_procurement",
+      updatedAt: new Date().toISOString(),
+    }).where(eq(contactConversations.id, input.conversation.id));
+    if (!analysis.explicitConfirmation || !isCompleteProcurementDraft(analysis.draft)) {
+      const body = isCompleteProcurementDraft(analysis.draft)
+        ? "The RFQ details were captured, but no explicit caller confirmation was found. No vendor was contacted. Call again or reply CONFIRM RFQ after reviewing the readback."
+        : `${buildMissingProcurementPrompt(analysis.draft)} No vendor was contacted.`;
+      await sendAgentPhoneReply(input.runtime, input.contact.phone, body);
+      return { received: true, procurementProcessed: false, complete: isCompleteProcurementDraft(analysis.draft), confirmed: analysis.explicitConfirmation };
+    }
+    const result = await confirmAndSourceProcurement(input, analysis.draft);
+    const body = result.blocked
+      ? `The confirmed RFQ was saved, but vendor calling was blocked: ${friendlyReasons(result.reasons)}. No order was placed.`
+      : `Confirmed RFQ ${result.requestId}. ${result.queued} smart, nonbinding vendor call was queued. No order was placed.`;
+    await sendAgentPhoneReply(input.runtime, input.contact.phone, body);
+    return { received: true, procurementProcessed: true, procurementRequestId: result.requestId, queued: result.queued, blocked: result.blocked };
+  }
+
+  const userText = turns.filter((turn) => /^(?:user|caller|customer)$/i.test(turn.role)).map((turn) => turn.content).join("\n");
+  const observation = parseFieldObservation(userText);
+  if (hasReportableFact(observation) && turns.some((turn) => /^(?:user|caller|customer)$/i.test(turn.role) && isExplicitConfirmation(turn.content))) {
+    await commitConfirmedEvent(input, observation, "hosted voice readback confirmation", "inbound_voice");
+    await sendAgentPhoneReply(input.runtime, input.contact.phone, `Groundwork recorded ${observation.condition} at ${observation.elementId}. A schedule candidate is awaiting superintendent approval.`);
+    return { received: true, fieldEventProcessed: true };
+  }
+  return { received: true, processed: false, reason: "no_confirmed_actionable_request" };
 }
 
 async function handleVoice(input: HandlerInput): Promise<VoiceResponse> {

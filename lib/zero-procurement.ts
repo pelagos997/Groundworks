@@ -97,7 +97,7 @@ export async function sourceRfqBatch(input: {
         body: JSON.stringify({
           phone_number: vendor.phone,
           task: buildVendorTask(input.runtime, input.requestId, vendor.name, input.draft),
-          model: "base",
+          model: "turbo",
           max_duration: 6,
           first_sentence: `Hello, this is Groundwork, an AI procurement assistant calling for ${input.runtime.GROUNDWORK_BUYER_COMPANY}. This is a nonbinding request for quote, not an order.`,
           record: false,

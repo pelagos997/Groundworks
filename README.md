@@ -87,6 +87,13 @@ natural field report or material request. No spoken consent phrase is required.
 An exact RFQ read-back confirmation is still required before any vendor call.
 SMS and MMS use the same allowlist and confirmation rules.
 
+With `GROUNDWORK_HOSTED_REASONING=true`, AgentPhone's hosted reasoning model
+conducts the inbound conversation and produces a canonical RFQ readback. The
+signed call-ended webhook independently checks completeness, caller confirmation,
+authority, vendor allowlists, and action policy before launching the outbound
+AI call. The outbound provider runs its turbo conversation model but still has
+no purchase-order authority.
+
 1. Provision an AgentPhone account, agent, and voice/SMS number.
 2. Add the server-only values documented in `.env.example`.
 3. Set `GROUNDWORK_CONTACTS_JSON` to real, consented test contacts. Keep outbound
