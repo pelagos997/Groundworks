@@ -64,6 +64,7 @@ export const AGENT_POLICY_MANIFEST = {
     allowedMediaTypes: ALLOWED_MEDIA_TYPES,
     maxMediaBytes: MAX_MEDIA_BYTES,
     zeroMaxPayUsdc: ZERO_MAX_PAY_USDC,
+    postIntakeReasoningMaxPayUsdc: 0.1,
     zeroRfqBatchMaxUsdc: ZERO_RFQ_BATCH_MAX_USDC,
     rfqCallsAreNonbinding: true,
     demoVendorOverrideRequiresExplicitMode: true,

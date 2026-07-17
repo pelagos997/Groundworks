@@ -54,6 +54,7 @@ import {
   type ProcurementDraft,
 } from "../../../../lib/procurement";
 import { sourceRfqBatch } from "../../../../lib/zero-procurement";
+import { reasonAboutProcurementIntake } from "../../../../lib/procurement-reasoning";
 import { recordAgentPhoneWebhook } from "../../../../lib/supabase-phone-data";
 import { formatUsd, quoteSummary } from "../../../../lib/quote-comparison";
 import {
@@ -159,20 +160,33 @@ async function handleHostedCallEnded(input: HandlerInput) {
     return content ? [{ role, content }] : [];
   });
   const analysis = analyzeHostedRfqTranscript(turns, input.runtime);
-  if (analysis.intent) {
+  const priorDraft = await latestPendingProcurementDraft(input);
+  if (analysis.intent || priorDraft) {
+    const transcript = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n");
+    const reasoning = await reasonAboutProcurementIntake({
+      db: input.db,
+      runtime: input.runtime,
+      projectId: projectId(input.runtime),
+      subjectId: input.contact.id,
+      commitId: typeof input.payload.data.callId === "string" ? input.payload.data.callId : input.webhookId,
+      transcript,
+      priorDraft,
+      explicitConfirmation: analysis.explicitConfirmation,
+    });
     await input.db.update(contactConversations).set({
-      pendingProcurementJson: JSON.stringify(analysis.draft),
-      state: isCompleteProcurementDraft(analysis.draft) ? "awaiting_rfq_confirmation" : "collecting_procurement",
+      pendingProcurementJson: JSON.stringify(reasoning.draft),
+      state: reasoning.ready ? "reasoning_ready" : "collecting_procurement",
       updatedAt: new Date().toISOString(),
     }).where(eq(contactConversations.id, input.conversation.id));
-    if (!analysis.explicitConfirmation || !isCompleteProcurementDraft(analysis.draft)) {
-      const body = isCompleteProcurementDraft(analysis.draft)
-        ? "The RFQ details were captured, but no explicit caller confirmation was found. No vendor was contacted. Call again or reply CONFIRM RFQ after reviewing the readback."
-        : `${buildMissingProcurementPrompt(analysis.draft)} No vendor was contacted.`;
+    if (!reasoning.ready) {
+      const issueText = reasoning.issues.join("; ");
+      const body = isCompleteProcurementDraft(reasoning.draft)
+        ? `${buildProcurementReadback(reasoning.draft)} Post-intake review blocked launch: ${issueText}. No vendor was contacted. Reply CONFIRM RFQ only after correcting any listed ambiguity.`
+        : `${buildMissingProcurementPrompt(reasoning.draft)} Post-intake review: ${issueText}. No vendor was contacted.`;
       await sendAgentPhoneReply(input.runtime, input.contact.phone, body);
-      return { received: true, procurementProcessed: false, complete: isCompleteProcurementDraft(analysis.draft), confirmed: analysis.explicitConfirmation };
+      return { received: true, procurementProcessed: false, reasoningReady: false, issues: reasoning.issues };
     }
-    const result = await confirmAndSourceProcurement(input, analysis.draft);
+    const result = await confirmAndSourceProcurement(input, reasoning.draft);
     const body = result.blocked
       ? `The confirmed RFQ was saved, but vendor calling was blocked: ${friendlyReasons(result.reasons)}. No order was placed.`
       : `Confirmed RFQ ${result.requestId}. ${result.queued} smart, nonbinding vendor call was queued. No order was placed.`;
@@ -240,8 +254,9 @@ async function handleMessage(input: HandlerInput) {
   let mediaStatus: string | null = null;
   if (mediaUrl) mediaStatus = await storePrivateMedia(input, mediaUrl, text);
 
-  if (isProcurementIntent(text) || input.conversation.pendingProcurementJson) {
-    const result = await handleProcurementMessage(input, text);
+  const priorDraft = await latestPendingProcurementDraft(input);
+  if (isProcurementIntent(text) || input.conversation.pendingProcurementJson || priorDraft) {
+    const result = await handleProcurementMessage(input, text, priorDraft);
     return { ...result, mediaStatus };
   }
   if (isPurchaseApprovalIntent(text)) {
@@ -282,7 +297,20 @@ async function handleProcurementVoice(input: HandlerInput, text: string): Promis
   const existing = parsePendingProcurement(input.conversation.pendingProcurementJson);
   const draft = parseProcurementDraft(text, existing, input.runtime);
   if (isRfqConfirmation(text) && existing && isCompleteProcurementDraft(draft)) {
-    const result = await confirmAndSourceProcurement(input, draft);
+    const reasoning = await reasonAboutProcurementIntake({
+      db: input.db,
+      runtime: input.runtime,
+      projectId: projectId(input.runtime),
+      subjectId: input.contact.id,
+      commitId: input.webhookId,
+      transcript: `caller: ${text}`,
+      priorDraft: draft,
+      explicitConfirmation: true,
+    });
+    if (!reasoning.ready) {
+      return { text: `Post-intake review blocked the vendor call: ${reasoning.issues.join("; ")}. No vendor was contacted.` };
+    }
+    const result = await confirmAndSourceProcurement(input, reasoning.draft);
     if (result.blocked) {
       return {
         text: `The RFQ is confirmed and saved, but vendor calls are blocked by policy: ${friendlyReasons(result.reasons)}. No vendor was contacted and no order was placed.`,
@@ -302,11 +330,20 @@ async function handleProcurementVoice(input: HandlerInput, text: string): Promis
   return { text: isCompleteProcurementDraft(draft) ? buildProcurementReadback(draft) : buildMissingProcurementPrompt(draft) };
 }
 
-async function handleProcurementMessage(input: HandlerInput, text: string) {
-  const existing = parsePendingProcurement(input.conversation.pendingProcurementJson);
-  const draft = parseProcurementDraft(text, existing, input.runtime);
-  if (isRfqConfirmation(text) && existing && isCompleteProcurementDraft(draft)) {
-    const result = await confirmAndSourceProcurement(input, draft);
+async function handleProcurementMessage(input: HandlerInput, text: string, priorDraft?: ProcurementDraft | null) {
+  const existing = parsePendingProcurement(input.conversation.pendingProcurementJson) ?? priorDraft ?? null;
+  const reasoning = await reasonAboutProcurementIntake({
+    db: input.db,
+    runtime: input.runtime,
+    projectId: projectId(input.runtime),
+    subjectId: input.contact.id,
+    commitId: input.webhookId,
+    transcript: `caller: ${text}`,
+    priorDraft: existing,
+    explicitConfirmation: isRfqConfirmation(text),
+  });
+  if (reasoning.ready) {
+    const result = await confirmAndSourceProcurement(input, reasoning.draft);
     const body = result.blocked
       ? `RFQ ${result.requestId} saved, but calls were blocked: ${friendlyReasons(result.reasons)}. No order was placed.`
       : `RFQ ${result.requestId} confirmed. ${result.queued} nonbinding vendor calls queued. Written quote and authorized PO approval are still required.`;
@@ -314,13 +351,13 @@ async function handleProcurementMessage(input: HandlerInput, text: string) {
     return { received: true, procurementRequestId: result.requestId, rfqCallsQueued: result.queued, blocked: result.blocked };
   }
   await input.db.update(contactConversations).set({
-    pendingProcurementJson: JSON.stringify(draft),
-    state: isCompleteProcurementDraft(draft) ? "awaiting_rfq_confirmation" : "collecting_procurement",
+    pendingProcurementJson: JSON.stringify(reasoning.draft),
+    state: "collecting_procurement",
     updatedAt: new Date().toISOString(),
   }).where(eq(contactConversations.id, input.conversation.id));
-  const body = isCompleteProcurementDraft(draft) ? buildProcurementReadback(draft) : buildMissingProcurementPrompt(draft);
-  await sendAgentPhoneReply(input.runtime, input.contact.phone, `${body} Reply CONFIRM RFQ when the read-back is correct.`);
-  return { received: true, procurementPending: true, complete: isCompleteProcurementDraft(draft) };
+  const body = isCompleteProcurementDraft(reasoning.draft) ? buildProcurementReadback(reasoning.draft) : buildMissingProcurementPrompt(reasoning.draft);
+  await sendAgentPhoneReply(input.runtime, input.contact.phone, `${body} Review issues: ${reasoning.issues.join("; ")}. Reply CONFIRM RFQ only when the final readback is correct.`);
+  return { received: true, procurementPending: true, complete: isCompleteProcurementDraft(reasoning.draft), reasoningReady: false, issues: reasoning.issues };
 }
 
 async function confirmAndSourceProcurement(input: HandlerInput, draft: ProcurementDraft) {
@@ -368,6 +405,20 @@ function parsePendingProcurement(raw: string | null) {
   if (!raw) return null;
   const parsed = ProcurementDraftSchema.safeParse(safeJson(raw));
   return parsed.success ? parsed.data : null;
+}
+
+async function latestPendingProcurementDraft(input: HandlerInput) {
+  const rows = await input.db.select({ id: contactConversations.id, pending: contactConversations.pendingProcurementJson })
+    .from(contactConversations)
+    .where(eq(contactConversations.caller, input.contact.phone))
+    .orderBy(desc(contactConversations.updatedAt))
+    .limit(20);
+  for (const row of rows) {
+    if (row.id === input.conversation.id || !row.pending) continue;
+    const draft = parsePendingProcurement(row.pending);
+    if (draft) return draft;
+  }
+  return null;
 }
 
 function friendlyReasons(reasons: string[]) {

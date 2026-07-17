@@ -18,6 +18,14 @@ export const ProcurementDraftSchema = z.object({
 });
 
 export type ProcurementDraft = z.infer<typeof ProcurementDraftSchema>;
+export const POST_INTAKE_REASONING_MAX_PAY_USDC = 0.1;
+
+export type ReasonedProcurementExtraction = {
+  explicitConfirmation: boolean;
+  confidence: "high" | "medium" | "low";
+  ambiguities: string[];
+  missingFields: string[];
+};
 
 export type HpileVendor = {
   id: string;
@@ -161,6 +169,26 @@ export function procurementMissingFields(draft: ProcurementDraft) {
 
 export function isCompleteProcurementDraft(draft: ProcurementDraft) {
   return procurementMissingFields(draft).length === 0;
+}
+
+export function auditReasonedProcurement(input: {
+  extraction: ReasonedProcurementExtraction;
+  draft: ProcurementDraft;
+  explicitConfirmation: boolean;
+}) {
+  const issues = new Set<string>();
+  for (const field of procurementMissingFields(input.draft)) issues.add(`missing: ${field}`);
+  for (const field of input.extraction.missingFields) issues.add(`model marked missing: ${field}`);
+  for (const ambiguity of input.extraction.ambiguities) issues.add(`ambiguity: ${ambiguity}`);
+  if (input.extraction.confidence !== "high") issues.add(`reasoning confidence is ${input.extraction.confidence}`);
+  if (!input.explicitConfirmation || !input.extraction.explicitConfirmation) issues.add("final caller confirmation missing");
+  if (input.draft.section && !/^HP\d{1,2}x\d{2,3}$/i.test(input.draft.section)) issues.add("section format is invalid");
+  if (input.draft.quantity && input.draft.quantity > 1000) issues.add("piece count exceeds automatic RFQ limit");
+  if (input.draft.pieceLengthFt && (input.draft.pieceLengthFt < 5 || input.draft.pieceLengthFt > 120)) issues.add("piece length is outside automatic RFQ range");
+  if (input.draft.grade && !/^A\d{3}\s+Grade\s+\d{2,3}$/i.test(input.draft.grade)) issues.add("ASTM grade format is invalid");
+  if (input.draft.deliveryAddress && (!/\d/.test(input.draft.deliveryAddress) || input.draft.deliveryAddress.length < 12)) issues.add("delivery address is incomplete");
+  if (input.draft.requiredOnSiteAt && !/20\d{2}/.test(input.draft.requiredOnSiteAt)) issues.add("required-on-site year is missing");
+  return { ready: issues.size === 0, issues: [...issues] };
 }
 
 export function procurementExtensions(draft: ProcurementDraft) {

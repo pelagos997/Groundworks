@@ -94,6 +94,13 @@ authority, vendor allowlists, and action policy before launching the outbound
 AI call. The outbound provider runs its turbo conversation model but still has
 no purchase-order authority.
 
+Every new procurement call or text is accumulated into the latest caller draft
+and passed through a separate schema-guided reasoning review before sourcing.
+That review costs at most $0.10, extracts spoken-number details, identifies
+missing or conflicting facts, and records an action receipt. Any uncertainty,
+non-high confidence, missing final confirmation, provider failure, or policy
+failure blocks the outbound call and returns the exact issues to the caller.
+
 1. Provision an AgentPhone account, agent, and voice/SMS number.
 2. Add the server-only values documented in `.env.example`.
 3. Set `GROUNDWORK_CONTACTS_JSON` to real, consented test contacts. Keep outbound

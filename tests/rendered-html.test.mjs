@@ -4,11 +4,13 @@ import test from "node:test";
 import {
   buildProcurementReadback,
   analyzeHostedRfqTranscript,
+  auditReasonedProcurement,
   buildInboundReasoningPrompt,
   buildVendorTask,
   isCompleteProcurementDraft,
   parseProcurementDraft,
   procurementExtensions,
+  POST_INTAKE_REASONING_MAX_PAY_USDC,
   resolveHpileVendors,
 } from "../lib/procurement.ts";
 import { evaluatePurchaseApproval, evaluateRfqSourcing, parseContacts } from "../lib/agent-policy.ts";
@@ -191,6 +193,25 @@ test("uses hosted reasoning but requires caller confirmation before sourcing", (
   assert.equal(confirmed.draft.pieceLengthFt, 20);
   assert.match(buildInboundReasoningPrompt(runtime), /ask one focused follow-up at a time/i);
   assert.match(buildInboundReasoningPrompt(runtime), /Do not say the words confirm RFQ on the caller's behalf/i);
+});
+
+test("blocks outbound sourcing unless the post-intake reasoning audit is clean", () => {
+  const draft = parseProcurementDraft(
+    "Need 200 pieces of HP12x53 at 20 feet, ASTM A572 Grade 50, domestic required, deliver to 1809 Broadway San Francisco CA 94109, required July 20 2026 at 7 am.",
+  );
+  const extraction = {
+    section: "HP12x53", quantity: 200, pieceLengthFt: 20, grade: "A572 Grade 50",
+    domesticRequirement: "domestic_required", mtrRequired: true, coating: "bare",
+    deliveryAddress: "1809 Broadway, San Francisco, CA 94109", requiredOnSiteAt: "2026-07-20T07:00:00-07:00",
+    unloadNotes: null, changeOrderRef: null, explicitConfirmation: true, confidence: "high",
+    ambiguities: [], missingFields: [], reasoningSummary: "Complete and internally consistent.",
+  };
+  assert.equal(POST_INTAKE_REASONING_MAX_PAY_USDC, 0.1);
+  assert.deepEqual(auditReasonedProcurement({ extraction, draft, explicitConfirmation: true }), { ready: true, issues: [] });
+  const blocked = auditReasonedProcurement({ extraction: { ...extraction, confidence: "medium", ambiguities: ["Quantity may refer to total feet."] }, draft, explicitConfirmation: true });
+  assert.equal(blocked.ready, false);
+  assert.match(blocked.issues.join(" "), /confidence is medium/i);
+  assert.match(blocked.issues.join(" "), /quantity may refer to total feet/i);
 });
 
 test("lets pre-authorized voice callers report naturally after the audible disclosure", async () => {
