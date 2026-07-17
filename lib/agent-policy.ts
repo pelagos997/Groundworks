@@ -66,6 +66,7 @@ export const AGENT_POLICY_MANIFEST = {
     zeroMaxPayUsdc: ZERO_MAX_PAY_USDC,
     zeroRfqBatchMaxUsdc: ZERO_RFQ_BATCH_MAX_USDC,
     rfqCallsAreNonbinding: true,
+    demoVendorOverrideRequiresExplicitMode: true,
     writtenQuoteRequiredForPurchase: true,
     explicitPoApprovalRequired: true,
   },
@@ -142,6 +143,7 @@ export function evaluateRfqSourcing(input: {
   explicitConfirmation: boolean;
   liveActionsEnabled: boolean;
   vendorCount: number;
+  demoMode?: boolean;
   maxPayPerVendor: number;
   buyerIdentityConfigured: boolean;
   withinCallingHours: boolean;
@@ -154,7 +156,9 @@ export function evaluateRfqSourcing(input: {
   if (!input.liveActionsEnabled) reasons.push("live_actions_disabled");
   if (!input.buyerIdentityConfigured) reasons.push("buyer_identity_incomplete");
   if (!input.withinCallingHours) reasons.push("outside_vendor_calling_hours");
-  if (input.vendorCount < 2 || input.vendorCount > 3) reasons.push("vendor_batch_out_of_policy");
+  if (input.demoMode ? input.vendorCount !== 1 : input.vendorCount < 2 || input.vendorCount > 3) {
+    reasons.push("vendor_batch_out_of_policy");
+  }
   if (input.maxPayPerVendor > ZERO_MAX_PAY_USDC) reasons.push("max_pay_exceeds_policy");
   if (input.vendorCount * input.maxPayPerVendor > ZERO_RFQ_BATCH_MAX_USDC) reasons.push("batch_spend_exceeds_policy");
   return reasons.length

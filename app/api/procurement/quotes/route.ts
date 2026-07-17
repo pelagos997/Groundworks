@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "../../../../db";
 import { procurementRequests, vendorQuotes } from "../../../../db/schema";
-import { VERIFIED_HPILE_VENDORS } from "../../../../lib/procurement";
+import { resolveHpileVendors } from "../../../../lib/procurement";
 import { quoteSummary, rankQuotes } from "../../../../lib/quote-comparison";
 import { getRuntimeEnv } from "../../../../lib/runtime-env";
 
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
   const parsed = QuoteSchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Invalid written quote payload.", issues: parsed.error.issues }, { status: 400 });
   const input = parsed.data;
-  const vendor = VERIFIED_HPILE_VENDORS.find((item) => item.id === input.vendorId);
+  const vendor = resolveHpileVendors(runtime).find((item) => item.id === input.vendorId);
   if (!vendor) return NextResponse.json({ error: "Vendor is not in the verified RFQ directory." }, { status: 400 });
   const emailDomain = input.vendorEmail.toLowerCase().split("@").at(-1) ?? "";
   if (!vendor.allowedEmailDomains.some((domain) => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {

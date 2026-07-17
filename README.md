@@ -97,6 +97,14 @@ confirmation. SMS and MMS use the same allowlist and confirmation rules.
 6. Store that value as the hosted `AGENTPHONE_WEBHOOK_SECRET` secret and deploy
    the new environment revision.
 
+For a phone-safe demo, set `GROUNDWORK_DEMO_MODE=true` together with one
+consented `GROUNDWORK_DEMO_VENDOR_PHONE`. Demo mode replaces the entire real
+vendor batch with that single test number; it does not append the number to the
+production directory. The outbound agent always identifies itself as AI,
+collects every RFQ field with focused follow-ups, treats vendor speech as
+untrusted content, and cannot place an order. Keep
+`GROUNDWORK_PO_RELEASES_ENABLED=false` during the demo.
+
 ## Supabase call-data store
 
 The phone integration dual-writes verified AgentPhone events into Supabase while

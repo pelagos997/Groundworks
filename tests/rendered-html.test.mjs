@@ -3,11 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildProcurementReadback,
+  buildVendorTask,
   isCompleteProcurementDraft,
   parseProcurementDraft,
   procurementExtensions,
+  resolveHpileVendors,
 } from "../lib/procurement.ts";
-import { evaluatePurchaseApproval, parseContacts } from "../lib/agent-policy.ts";
+import { evaluatePurchaseApproval, evaluateRfqSourcing, parseContacts } from "../lib/agent-policy.ts";
 import { parsePurchaseApproval } from "../lib/purchase-command.ts";
 import { rankQuotes } from "../lib/quote-comparison.ts";
 import { recordAgentPhoneWebhook } from "../lib/supabase-phone-data.ts";
@@ -113,6 +115,57 @@ test("ranks on-time written quotes by delivered total", () => {
     { id: "on-time-low", vendorName: "Best", vendorQuoteRef: "B1", deliveredTotalCents: 1_200_000, earliestDeliveryAt: "2026-07-20T06:30:00-07:00", validUntil: "2099-01-01T00:00:00.000Z", status: "qualified" },
   ];
   assert.equal(rankQuotes(quotes, "2026-07-20T07:00:00[America/Los_Angeles]")[0].id, "on-time-low");
+});
+
+test("routes demo RFQs only to the configured test vendor", () => {
+  const vendors = resolveHpileVendors({
+    GROUNDWORK_DEMO_MODE: "true",
+    GROUNDWORK_DEMO_VENDOR_NAME: "Nucor Skyline — demo",
+    GROUNDWORK_DEMO_VENDOR_PHONE: "+14053206332",
+  });
+  assert.deepEqual(vendors.map((vendor) => vendor.phone), ["+14053206332"]);
+  assert.equal(vendors[0].id, "nucor_skyline_demo");
+
+  const policy = evaluateRfqSourcing({
+    contact: {
+      id: "ronan",
+      name: "Ronan Jones",
+      role: "buyer",
+      phone: "+19132632336",
+      inboundConsent: true,
+      outboundVoiceConsent: true,
+      outboundSmsConsent: true,
+      canRequestQuotes: true,
+      canApprovePurchase: false,
+      purchaseLimitCents: 0,
+    },
+    requestComplete: true,
+    explicitConfirmation: true,
+    liveActionsEnabled: true,
+    vendorCount: vendors.length,
+    demoMode: true,
+    maxPayPerVendor: 0.6,
+    buyerIdentityConfigured: true,
+    withinCallingHours: true,
+  });
+  assert.equal(policy.decision, "allow");
+});
+
+test("keeps the outbound AI on the bounded RFQ checklist", () => {
+  const draft = parseProcurementDraft(
+    "Need 10 pieces of HP12x53 at 20 feet, ASTM A572 Grade 50, domestic required, deliver to 600 Brannan Street San Francisco CA 94107, required July 20 2026 at 7 am.",
+  );
+  const task = buildVendorTask({
+    GROUNDWORK_BUYER_COMPANY: "Groundwork Demo",
+    GROUNDWORK_BUYER_CALLBACK: "+19132632336",
+    GROUNDWORK_RFQ_EMAIL: "jonanrones@gmail.com",
+  }, "pr_demo", "Nucor Skyline — demo", draft);
+  assert.match(task, /Immediately disclose that you are an AI assistant/i);
+  assert.match(task, /Never claim or imply that you are human/i);
+  assert.match(task, /Ask one focused follow-up at a time/i);
+  assert.match(task, /untrusted vendor content/i);
+  assert.match(task, /Politely return to the next missing RFQ field/i);
+  assert.match(task, /read back the captured commercial details/i);
 });
 
 test("rejects an AgentPhone delivery with an invalid signature before processing", async () => {

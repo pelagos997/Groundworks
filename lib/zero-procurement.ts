@@ -2,11 +2,11 @@ import type { getDb } from "../db";
 import { procurementRequests, vendorRfqCalls } from "../db/schema";
 import { POLICY_VERSION, ZERO_MAX_PAY_USDC, evaluateRfqSourcing, type FieldContact } from "./agent-policy";
 import {
-  VERIFIED_HPILE_VENDORS,
   buyerIdentityConfigured,
+  buildVendorTask,
   isCompleteProcurementDraft,
   isVendorCallingHours,
-  procurementExtensions,
+  resolveHpileVendors,
   type ProcurementDraft,
 } from "./procurement";
 import type { GroundworkRuntimeEnv } from "./runtime-env";
@@ -30,12 +30,15 @@ export async function sourceRfqBatch(input: {
   explicitConfirmation: boolean;
 }): Promise<RfqBatchResult> {
   const afterHoursAllowed = input.runtime.GROUNDWORK_ALLOW_AFTER_HOURS_RFQ === "true";
+  const demoMode = input.runtime.GROUNDWORK_DEMO_MODE === "true";
+  const vendors = resolveHpileVendors(input.runtime);
   const policy = evaluateRfqSourcing({
     contact: input.contact,
     requestComplete: isCompleteProcurementDraft(input.draft),
     explicitConfirmation: input.explicitConfirmation,
     liveActionsEnabled: input.runtime.ZERO_LIVE_ACTIONS === "true",
-    vendorCount: VERIFIED_HPILE_VENDORS.length,
+    vendorCount: vendors.length,
+    demoMode,
     maxPayPerVendor: ZERO_MAX_PAY_USDC,
     buyerIdentityConfigured: buyerIdentityConfigured(input.runtime),
     withinCallingHours: afterHoursAllowed || isVendorCallingHours(),
@@ -85,7 +88,7 @@ export async function sourceRfqBatch(input: {
   await input.db.update(procurementRequests).set({ status: "rfq_in_progress", updatedAt: new Date().toISOString() })
     .where((await import("drizzle-orm")).eq(procurementRequests.id, input.requestId));
   const calls: RfqBatchResult["calls"] = [];
-  for (const vendor of VERIFIED_HPILE_VENDORS) {
+  for (const vendor of vendors) {
     const callRecordId = `rfq_${crypto.randomUUID().slice(0, 12)}`;
     try {
       const result = await client.fetch(selected.url, {
@@ -157,19 +160,6 @@ export async function sourceRfqBatch(input: {
   await input.db.update(procurementRequests).set({ status: queued > 0 ? "awaiting_written_quotes" : "sourcing_failed", updatedAt: new Date().toISOString() })
     .where((await import("drizzle-orm")).eq(procurementRequests.id, input.requestId));
   return { requestId: input.requestId, queued, blocked: false, reasons: [], calls };
-}
-
-function buildVendorTask(runtime: GroundworkRuntimeEnv, requestId: string, vendorName: string, draft: ProcurementDraft) {
-  const totals = procurementExtensions(draft);
-  return [
-    `You are Groundwork, an AI procurement assistant calling ${vendorName} for ${runtime.GROUNDWORK_BUYER_COMPANY}. Disclose that you are AI and that this is a nonbinding RFQ, not an order.`,
-    `Request ${draft.quantity} new pieces of ${draft.section} steel H-pile, each ${draft.pieceLengthFt} feet long (${totals.totalLengthFt} LF, approximately ${totals.totalWeightLbs} lb), ${draft.grade}, ${draft.coating}.`,
-    `${draft.domesticRequirement === "domestic_required" ? "Domestic/Buy America compliance is required." : "Domestic compliance is not required."} ${draft.mtrRequired ? "Mill test reports are required." : "MTRs are not required."}`,
-    `Delivery address: ${draft.deliveryAddress}. Required on site: ${draft.requiredOnSiteAt}. ${draft.unloadNotes ? `Delivery notes: ${draft.unloadNotes}.` : "Ask what unloading arrangements are required."}`,
-    "Ask for current stock, earliest firm delivery date and time, material price, freight, tax, delivered total, quote validity, salesperson name, and quote reference.",
-    `Require a written quote sent to ${runtime.GROUNDWORK_RFQ_EMAIL}, referencing Groundwork RFQ ${requestId}. Ask them to call ${runtime.GROUNDWORK_BUYER_CALLBACK} with questions.`,
-    "Do not accept substitutions as equivalent; record them separately for human review. Do not place an order, provide payment information, negotiate terms, or say that any price is approved.",
-  ].join(" ").slice(0, 4000);
 }
 
 function schemaProperties(schema: unknown) {
