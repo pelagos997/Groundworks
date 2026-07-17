@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import {
+  buildProcurementReadback,
+  isCompleteProcurementDraft,
+  parseProcurementDraft,
+  procurementExtensions,
+} from "../lib/procurement.ts";
+import { evaluatePurchaseApproval, parseContacts } from "../lib/agent-policy.ts";
+import { parsePurchaseApproval } from "../lib/purchase-command.ts";
+import { rankQuotes } from "../lib/quote-comparison.ts";
 
 async function render(pathname = "/", init, bindings = {}) {
   globalThis.__CLOUDFLARE_TEST_ENV__ = bindings;
@@ -39,10 +48,69 @@ test("publishes the server-enforced contact policy manifest", async () => {
   const response = await render("/api/policies");
   assert.equal(response.status, 200);
   const result = await response.json();
-  assert.equal(result.version, "groundwork-field-contact-v1.0");
+  assert.equal(result.version, "groundwork-phone-procurement-v2.0");
   assert.equal(result.defaults, "deny");
   assert.equal(result.controls.zeroMaxPayUsdc, 0.6);
   assert.match(result.prohibited.join(" "), /Engineering design/);
+});
+
+test("normalizes the HP12x53 overrun and verifies the quantity extension", () => {
+  const draft = parseProcurementDraft(
+    "Piling overrun, change order CO-17. Need 10 20 ft sections of 12x53 H-pile, ASTM A572 Grade 50, domestic required. Deliver to 600 Brannan Street San Francisco CA 94107, required July 20 2026 at 7 am.",
+  );
+  assert.equal(draft.section, "HP12x53");
+  assert.equal(draft.quantity, 10);
+  assert.equal(draft.pieceLengthFt, 20);
+  assert.equal(draft.grade, "A572 Grade 50");
+  assert.equal(draft.domesticRequirement, "domestic_required");
+  assert.equal(isCompleteProcurementDraft(draft), true);
+  assert.deepEqual(procurementExtensions(draft), { totalLengthFt: 200, totalWeightLbs: 10600, shortTons: 5.3 });
+  assert.match(buildProcurementReadback(draft), /10,600 pounds/);
+  assert.match(buildProcurementReadback(draft), /nonbinding quote calls only, not an order/i);
+});
+
+test("requires an exact written quote, total, authority, and PO for release", () => {
+  const [buyer] = parseContacts(JSON.stringify([{
+    id: "pm",
+    name: "Project Manager",
+    role: "project_manager",
+    phone: "+14155550149",
+    canRequestQuotes: true,
+    canApprovePurchase: true,
+    purchaseLimitCents: 2_500_000,
+  }]));
+  const command = parsePurchaseApproval("Release quote Q-419 at $12,850 delivered under PO-1042 and release the order.");
+  assert.deepEqual(command, { quoteRef: "Q-419", deliveredTotalCents: 1_285_000, poNumber: "PO-1042", explicitRelease: true });
+  const allowed = evaluatePurchaseApproval({
+    contact: buyer,
+    writtenQuoteReceived: true,
+    quoteMatchesRequest: true,
+    quoteExpired: false,
+    deliveredTotalCents: command.deliveredTotalCents,
+    poNumber: command.poNumber,
+    explicitConfirmation: command.explicitRelease,
+  });
+  assert.equal(allowed.decision, "allow");
+  const blocked = evaluatePurchaseApproval({
+    contact: buyer,
+    writtenQuoteReceived: false,
+    quoteMatchesRequest: true,
+    quoteExpired: false,
+    deliveredTotalCents: command.deliveredTotalCents,
+    poNumber: command.poNumber,
+    explicitConfirmation: true,
+  });
+  assert.equal(blocked.decision, "deny");
+  assert.ok(blocked.reasons.includes("written_quote_required"));
+});
+
+test("ranks on-time written quotes by delivered total", () => {
+  const quotes = [
+    { id: "late-cheap", vendorName: "Late", vendorQuoteRef: "L1", deliveredTotalCents: 900_000, earliestDeliveryAt: "2026-07-22T07:00:00-07:00", validUntil: "2099-01-01T00:00:00.000Z", status: "qualified" },
+    { id: "on-time-high", vendorName: "Fast", vendorQuoteRef: "F1", deliveredTotalCents: 1_300_000, earliestDeliveryAt: "2026-07-20T06:00:00-07:00", validUntil: "2099-01-01T00:00:00.000Z", status: "qualified" },
+    { id: "on-time-low", vendorName: "Best", vendorQuoteRef: "B1", deliveredTotalCents: 1_200_000, earliestDeliveryAt: "2026-07-20T06:30:00-07:00", validUntil: "2099-01-01T00:00:00.000Z", status: "qualified" },
+  ];
+  assert.equal(rankQuotes(quotes, "2026-07-20T07:00:00[America/Los_Angeles]")[0].id, "on-time-low");
 });
 
 test("rejects an AgentPhone delivery with an invalid signature before processing", async () => {

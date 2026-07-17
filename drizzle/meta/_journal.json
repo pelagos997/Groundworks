@@ -8,6 +8,13 @@
       "when": 1784318362050,
       "tag": "0000_blushing_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784319444415,
+      "tag": "0001_clever_king_bedlam",
+      "breakpoints": true
     }
   ]
 }

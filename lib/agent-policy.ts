@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-export const POLICY_VERSION = "groundwork-field-contact-v1.0";
+export const POLICY_VERSION = "groundwork-phone-procurement-v2.0";
 export const ZERO_MAX_PAY_USDC = 0.6;
+export const ZERO_RFQ_BATCH_MAX_USDC = 1.8;
 export const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 export const ALLOWED_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 
@@ -13,6 +14,9 @@ const ContactSchema = z.object({
   inboundConsent: z.boolean().default(true),
   outboundVoiceConsent: z.boolean().default(false),
   outboundSmsConsent: z.boolean().default(false),
+  canRequestQuotes: z.boolean().default(false),
+  canApprovePurchase: z.boolean().default(false),
+  purchaseLimitCents: z.number().int().nonnegative().default(0),
 });
 
 export type FieldContact = z.infer<typeof ContactSchema>;
@@ -31,18 +35,23 @@ export const AGENT_POLICY_MANIFEST = {
     "Read back extracted facts and request explicit confirmation",
     "Normalize confirmed observations into versioned field events",
     "Search and inspect Zero capabilities without spending",
+    "Capture a complete material request and calculate quantity extensions",
+    "Solicit nonbinding quotes from the verified vendor directory after an authorized caller confirms the RFQ",
   ],
   approvalRequired: [
     "Commit any schedule candidate",
     "Place an outbound Zero voice call",
     "Send outbound SMS or email beyond the active inbound conversation",
     "Spend up to the per-action Zero ceiling",
+    "Select a written vendor quote and release a purchase order",
   ],
   prohibited: [
     "Engineering design or interpretation",
     "Safety direction or stop-work clearance",
     "Means-and-methods direction",
-    "Cost, contract, or change-order authorization",
+    "Inventing cost, contract, change-order, material-grade, or delivery authority",
+    "Treating a verbal quote or phone transcript as a binding order",
+    "Accepting a substitute section, grade, length, or domestic-compliance basis without human approval",
     "Contacting a number absent from the consented allowlist",
     "Publishing field images or using face recognition",
   ],
@@ -55,6 +64,10 @@ export const AGENT_POLICY_MANIFEST = {
     allowedMediaTypes: ALLOWED_MEDIA_TYPES,
     maxMediaBytes: MAX_MEDIA_BYTES,
     zeroMaxPayUsdc: ZERO_MAX_PAY_USDC,
+    zeroRfqBatchMaxUsdc: ZERO_RFQ_BATCH_MAX_USDC,
+    rfqCallsAreNonbinding: true,
+    writtenQuoteRequiredForPurchase: true,
+    explicitPoApprovalRequired: true,
   },
 } as const;
 
@@ -80,6 +93,9 @@ export function findContact(phone: string, contactsRaw?: string, callersRaw?: st
     inboundConsent: true,
     outboundVoiceConsent: false,
     outboundSmsConsent: false,
+    canRequestQuotes: false,
+    canApprovePurchase: false,
+    purchaseLimitCents: 0,
   };
 }
 
@@ -118,6 +134,56 @@ export function evaluateZeroVoiceAction(input: {
   if (!input.liveActionsEnabled) reasons.push("live_actions_disabled");
   if (input.maxPay > ZERO_MAX_PAY_USDC) reasons.push("max_pay_exceeds_policy");
   return reasons.length ? decision("deny", reasons) : decision("allow", ["approved_commit", "consented_recipient", "spend_within_limit"]);
+}
+
+export function evaluateRfqSourcing(input: {
+  contact: FieldContact | null;
+  requestComplete: boolean;
+  explicitConfirmation: boolean;
+  liveActionsEnabled: boolean;
+  vendorCount: number;
+  maxPayPerVendor: number;
+  buyerIdentityConfigured: boolean;
+  withinCallingHours: boolean;
+}): PolicyDecision {
+  const reasons: string[] = [];
+  if (!input.contact) reasons.push("requester_not_allowlisted");
+  if (input.contact && !input.contact.canRequestQuotes) reasons.push("rfq_authority_missing");
+  if (!input.requestComplete) reasons.push("material_request_incomplete");
+  if (!input.explicitConfirmation) reasons.push("rfq_confirmation_missing");
+  if (!input.liveActionsEnabled) reasons.push("live_actions_disabled");
+  if (!input.buyerIdentityConfigured) reasons.push("buyer_identity_incomplete");
+  if (!input.withinCallingHours) reasons.push("outside_vendor_calling_hours");
+  if (input.vendorCount < 2 || input.vendorCount > 3) reasons.push("vendor_batch_out_of_policy");
+  if (input.maxPayPerVendor > ZERO_MAX_PAY_USDC) reasons.push("max_pay_exceeds_policy");
+  if (input.vendorCount * input.maxPayPerVendor > ZERO_RFQ_BATCH_MAX_USDC) reasons.push("batch_spend_exceeds_policy");
+  return reasons.length
+    ? decision("deny", reasons)
+    : decision("allow", ["authorized_requester", "complete_confirmed_rfq", "verified_vendor_batch", "nonbinding_only", "spend_within_limit"]);
+}
+
+export function evaluatePurchaseApproval(input: {
+  contact: FieldContact | null;
+  writtenQuoteReceived: boolean;
+  quoteMatchesRequest: boolean;
+  quoteExpired: boolean;
+  deliveredTotalCents: number;
+  poNumber: string;
+  explicitConfirmation: boolean;
+}): PolicyDecision {
+  const reasons: string[] = [];
+  if (!input.contact) reasons.push("approver_not_allowlisted");
+  if (input.contact && !input.contact.canApprovePurchase) reasons.push("purchase_authority_missing");
+  if (!input.writtenQuoteReceived) reasons.push("written_quote_required");
+  if (!input.quoteMatchesRequest) reasons.push("quote_does_not_match_request");
+  if (input.quoteExpired) reasons.push("quote_expired");
+  if (!input.explicitConfirmation) reasons.push("purchase_confirmation_missing");
+  if (!/^PO[-A-Z0-9]{3,32}$/i.test(input.poNumber)) reasons.push("valid_po_number_required");
+  if (input.deliveredTotalCents <= 0) reasons.push("delivered_total_required");
+  if (input.contact && input.deliveredTotalCents > input.contact.purchaseLimitCents) reasons.push("purchase_limit_exceeded");
+  return reasons.length
+    ? decision("deny", reasons)
+    : decision("allow", ["authorized_buyer", "written_matching_quote", "delivered_total_within_limit", "explicit_po_confirmation"]);
 }
 
 function decision(value: PolicyDecision["decision"], reasons: string[]): PolicyDecision {

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import {
   AgentPhoneWebhookSchema,
@@ -20,6 +20,7 @@ import {
   classifyRestrictedRequest,
   evaluateInboundContact,
   evaluateMedia,
+  evaluatePurchaseApproval,
   findContact,
   type FieldContact,
   type PolicyDecision,
@@ -30,13 +31,33 @@ import {
   fieldEvents,
   fieldMedia,
   policyDecisions,
+  procurementRequests,
+  purchaseOrders,
   scheduleCandidates,
+  vendorQuotes,
   webhookDeliveries,
 } from "../../../../db/schema";
 import { createFieldEvent } from "../../../../lib/nexla-data-products";
 import { deliverToNexla } from "../../../../lib/nexla";
 import { runReplanGraph } from "../../../../lib/replan-graph";
 import { DEFAULT_PROJECT_ID, getRuntimeEnv, type GroundworkRuntimeEnv } from "../../../../lib/runtime-env";
+import {
+  ProcurementDraftSchema,
+  buildMissingProcurementPrompt,
+  buildProcurementReadback,
+  isCompleteProcurementDraft,
+  isProcurementIntent,
+  isRfqConfirmation,
+  parseProcurementDraft,
+  procurementExtensions,
+  type ProcurementDraft,
+} from "../../../../lib/procurement";
+import { sourceRfqBatch } from "../../../../lib/zero-procurement";
+import { formatUsd, quoteSummary } from "../../../../lib/quote-comparison";
+import {
+  releasePurchaseOrder,
+} from "../../../../lib/purchase-order";
+import { isPurchaseApprovalIntent, isQuoteStatusIntent, parsePurchaseApproval } from "../../../../lib/purchase-command";
 
 type VoiceResponse = { text: string; hangup?: boolean; send_message?: { body: string } };
 
@@ -129,8 +150,14 @@ async function handleVoice(input: HandlerInput): Promise<VoiceResponse> {
       state: "collecting",
       updatedAt: new Date().toISOString(),
     }).where(eq(contactConversations.id, input.conversation.id));
-    return { text: "Thank you. Report the shaft ID, observed condition, depth if known, whether work stopped, and any cleared alternate shaft." };
+    return { text: "Thank you. Report a field condition, or tell me about a piling overrun and the exact extra material needed. I can solicit quotes after a complete read-back, but I cannot place an order without a written quote and authorized PO approval." };
   }
+
+  if (isProcurementIntent(text) || input.conversation.pendingProcurementJson) {
+    return handleProcurementVoice(input, text);
+  }
+  if (isPurchaseApprovalIntent(text)) return handlePurchaseApprovalVoice(input, text);
+  if (isQuoteStatusIntent(text)) return { text: await procurementStatusText(input) };
 
   const restricted = classifyRestrictedRequest(text);
   if (restricted) {
@@ -174,6 +201,21 @@ async function handleMessage(input: HandlerInput) {
   let mediaStatus: string | null = null;
   if (mediaUrl) mediaStatus = await storePrivateMedia(input, mediaUrl, text);
 
+  if (isProcurementIntent(text) || input.conversation.pendingProcurementJson) {
+    const result = await handleProcurementMessage(input, text);
+    return { ...result, mediaStatus };
+  }
+  if (isPurchaseApprovalIntent(text)) {
+    const response = await handlePurchaseApprovalVoice(input, text);
+    await sendAgentPhoneReply(input.runtime, input.contact.phone, response.text);
+    return { received: true, purchaseApprovalProcessed: true, mediaStatus };
+  }
+  if (isQuoteStatusIntent(text)) {
+    const body = await procurementStatusText(input);
+    await sendAgentPhoneReply(input.runtime, input.contact.phone, body);
+    return { received: true, procurementStatus: body, mediaStatus };
+  }
+
   if (isExplicitConfirmation(text) && input.conversation.pendingObservationJson) {
     const observation = JSON.parse(input.conversation.pendingObservationJson) as FieldObservation;
     await commitConfirmedEvent(input, observation, text, "inbound_message");
@@ -195,6 +237,200 @@ async function handleMessage(input: HandlerInput) {
     await sendAgentPhoneReply(input.runtime, input.contact.phone, "Groundwork received your message. Include a shaft ID and observed condition; schedule changes require a confirmed read-back and superintendent approval.");
   }
   return { received: true, pendingConfirmation: hasReportableFact(observation), mediaStatus };
+}
+
+async function handleProcurementVoice(input: HandlerInput, text: string): Promise<VoiceResponse> {
+  const existing = parsePendingProcurement(input.conversation.pendingProcurementJson);
+  const draft = parseProcurementDraft(text, existing, input.runtime);
+  if (isRfqConfirmation(text) && existing && isCompleteProcurementDraft(draft)) {
+    const result = await confirmAndSourceProcurement(input, draft);
+    if (result.blocked) {
+      return {
+        text: `The RFQ is confirmed and saved, but vendor calls are blocked by policy: ${friendlyReasons(result.reasons)}. No vendor was contacted and no order was placed.`,
+      };
+    }
+    const vendors = result.calls.filter((call) => call.status === "success").map((call) => call.vendor).join(", ");
+    return {
+      text: `RFQ confirmed. I queued nonbinding calls to ${vendors || "the verified vendors"}. I am waiting for written delivered quotes and firm arrival times. No order has been placed.`,
+      send_message: { body: `Groundwork RFQ ${result.requestId}: ${draft.quantity} × ${draft.pieceLengthFt}-ft ${draft.section}. Vendor calls queued: ${result.queued}. Written quote and authorized PO approval are required before release.` },
+    };
+  }
+  await input.db.update(contactConversations).set({
+    pendingProcurementJson: JSON.stringify(draft),
+    state: isCompleteProcurementDraft(draft) ? "awaiting_rfq_confirmation" : "collecting_procurement",
+    updatedAt: new Date().toISOString(),
+  }).where(eq(contactConversations.id, input.conversation.id));
+  return { text: isCompleteProcurementDraft(draft) ? buildProcurementReadback(draft) : buildMissingProcurementPrompt(draft) };
+}
+
+async function handleProcurementMessage(input: HandlerInput, text: string) {
+  const existing = parsePendingProcurement(input.conversation.pendingProcurementJson);
+  const draft = parseProcurementDraft(text, existing, input.runtime);
+  if (isRfqConfirmation(text) && existing && isCompleteProcurementDraft(draft)) {
+    const result = await confirmAndSourceProcurement(input, draft);
+    const body = result.blocked
+      ? `RFQ ${result.requestId} saved, but calls were blocked: ${friendlyReasons(result.reasons)}. No order was placed.`
+      : `RFQ ${result.requestId} confirmed. ${result.queued} nonbinding vendor calls queued. Written quote and authorized PO approval are still required.`;
+    await sendAgentPhoneReply(input.runtime, input.contact.phone, body);
+    return { received: true, procurementRequestId: result.requestId, rfqCallsQueued: result.queued, blocked: result.blocked };
+  }
+  await input.db.update(contactConversations).set({
+    pendingProcurementJson: JSON.stringify(draft),
+    state: isCompleteProcurementDraft(draft) ? "awaiting_rfq_confirmation" : "collecting_procurement",
+    updatedAt: new Date().toISOString(),
+  }).where(eq(contactConversations.id, input.conversation.id));
+  const body = isCompleteProcurementDraft(draft) ? buildProcurementReadback(draft) : buildMissingProcurementPrompt(draft);
+  await sendAgentPhoneReply(input.runtime, input.contact.phone, `${body} Reply CONFIRM RFQ when the read-back is correct.`);
+  return { received: true, procurementPending: true, complete: isCompleteProcurementDraft(draft) };
+}
+
+async function confirmAndSourceProcurement(input: HandlerInput, draft: ProcurementDraft) {
+  const extensions = procurementExtensions(draft);
+  const requestId = `pr_${crypto.randomUUID().slice(0, 12)}`;
+  await input.db.insert(procurementRequests).values({
+    id: requestId,
+    projectId: projectId(input.runtime),
+    conversationId: input.conversation.id,
+    requestedByContactId: input.contact.id,
+    sourceWebhookId: input.webhookId,
+    changeOrderRef: draft.changeOrderRef,
+    material: draft.material,
+    section: draft.section!,
+    quantity: draft.quantity!,
+    pieceLengthFt: draft.pieceLengthFt!,
+    totalLengthFt: extensions.totalLengthFt,
+    totalWeightLbs: extensions.totalWeightLbs,
+    grade: draft.grade!,
+    domesticRequirement: draft.domesticRequirement!,
+    mtrRequired: draft.mtrRequired,
+    coating: draft.coating,
+    deliveryAddress: draft.deliveryAddress!,
+    requiredOnSiteAt: draft.requiredOnSiteAt!,
+    unloadNotes: draft.unloadNotes,
+    status: "confirmed",
+  });
+  await input.db.update(contactConversations).set({
+    pendingProcurementJson: null,
+    state: "rfq_confirmed",
+    updatedAt: new Date().toISOString(),
+  }).where(eq(contactConversations.id, input.conversation.id));
+  return sourceRfqBatch({
+    db: input.db,
+    runtime: input.runtime,
+    projectId: projectId(input.runtime),
+    requestId,
+    contact: input.contact,
+    draft,
+    explicitConfirmation: true,
+  });
+}
+
+function parsePendingProcurement(raw: string | null) {
+  if (!raw) return null;
+  const parsed = ProcurementDraftSchema.safeParse(safeJson(raw));
+  return parsed.success ? parsed.data : null;
+}
+
+function friendlyReasons(reasons: string[]) {
+  const labels: Record<string, string> = {
+    rfq_authority_missing: "this caller is not authorized to request quotes",
+    live_actions_disabled: "live Zero actions are disabled",
+    buyer_identity_incomplete: "buyer name, company, callback, or RFQ email is missing",
+    outside_vendor_calling_hours: "it is outside weekday vendor calling hours",
+    zero_signing_wallet_not_configured: "the hosted Zero wallet is not configured",
+    no_healthy_schema_compatible_voice_capability: "Zero found no healthy compatible calling capability",
+    purchase_order_releases_disabled: "live purchase-order release is disabled",
+    purchase_authority_missing: "this caller is not authorized to approve purchases",
+    written_quote_required: "a written quote is required",
+    quote_does_not_match_request: "the quote does not exactly match the request",
+    quote_expired: "the quote has expired",
+    purchase_confirmation_missing: "say release the order to explicitly approve release",
+    valid_po_number_required: "a valid PO number is required",
+    purchase_limit_exceeded: "the delivered total exceeds this caller's purchase limit",
+  };
+  return reasons.map((reason) => labels[reason] ?? reason.replaceAll("_", " ")).join("; ");
+}
+
+async function procurementStatusText(input: HandlerInput) {
+  const latest = await getLatestProcurementRequest(input);
+  if (!latest) return "There is no confirmed piling procurement request for this caller.";
+  const quotes = await input.db.select().from(vendorQuotes).where(eq(vendorQuotes.requestId, latest.id));
+  const qualified = quotes.filter((quote) => quote.status === "qualified");
+  return `Request ${latest.id} is ${latest.status}. ${quoteSummary(qualified, latest.requiredOnSiteAt)} No order is released until an authorized buyer repeats the exact written quote total and PO number.`;
+}
+
+async function handlePurchaseApprovalVoice(input: HandlerInput, text: string): Promise<VoiceResponse> {
+  const latest = await getLatestProcurementRequest(input);
+  if (!latest) return { text: "I cannot approve a purchase because there is no confirmed procurement request." };
+  const command = parsePurchaseApproval(text);
+  const quotes = await input.db.select().from(vendorQuotes).where(eq(vendorQuotes.requestId, latest.id));
+  const selected = command.quoteRef
+    ? quotes.find((quote) => quote.vendorQuoteRef.toUpperCase() === command.quoteRef)
+    : undefined;
+  if (!selected || command.deliveredTotalCents === null || !command.poNumber) {
+    return {
+      text: `${quoteSummary(quotes.filter((quote) => quote.status === "qualified"), latest.requiredOnSiteAt)} To release, say: release quote, then the quote reference, the exact delivered dollar total, and the PO number.`,
+    };
+  }
+  if (command.deliveredTotalCents !== selected.deliveredTotalCents) {
+    return { text: `Blocked. The spoken total ${formatUsd(command.deliveredTotalCents)} does not equal written quote ${selected.vendorQuoteRef} at ${formatUsd(selected.deliveredTotalCents)} delivered. No order was placed.` };
+  }
+  const quoteMatchesRequest = selected.status === "qualified"
+    && selected.grade.toUpperCase() === latest.grade.toUpperCase()
+    && selected.domesticCompliance === latest.domesticRequirement
+    && (!latest.mtrRequired || selected.mtrIncluded);
+  const policy = evaluatePurchaseApproval({
+    contact: input.contact,
+    writtenQuoteReceived: selected.writtenQuoteReceived,
+    quoteMatchesRequest,
+    quoteExpired: selected.validUntil < new Date().toISOString(),
+    deliveredTotalCents: selected.deliveredTotalCents,
+    poNumber: command.poNumber,
+    explicitConfirmation: command.explicitRelease,
+  });
+  await recordPolicyDecision(input.db, projectId(input.runtime), input.contact.id, "approve_and_release_purchase_order", policy);
+  if (policy.decision !== "allow") {
+    return { text: `Purchase blocked: ${friendlyReasons(policy.reasons)}. No order was placed.` };
+  }
+  const purchaseOrderId = `po_${crypto.randomUUID().slice(0, 12)}`;
+  await input.db.insert(purchaseOrders).values({
+    id: purchaseOrderId,
+    projectId: latest.projectId,
+    requestId: latest.id,
+    quoteId: selected.id,
+    poNumber: command.poNumber,
+    approvedByContactId: input.contact.id,
+    approvedAt: new Date().toISOString(),
+    approvalLimitCents: input.contact.purchaseLimitCents,
+    deliveredTotalCents: selected.deliveredTotalCents,
+    deliveryAddress: latest.deliveryAddress,
+    status: "approved_pending_release",
+  });
+  await input.db.update(vendorQuotes).set({ status: "selected" }).where(eq(vendorQuotes.id, selected.id));
+  await input.db.update(procurementRequests).set({ status: "approved_pending_release", updatedAt: new Date().toISOString() })
+    .where(eq(procurementRequests.id, latest.id));
+  const release = await releasePurchaseOrder({
+    db: input.db,
+    runtime: input.runtime,
+    projectId: latest.projectId,
+    request: latest,
+    quote: selected,
+    purchaseOrderId,
+    poNumber: command.poNumber,
+  });
+  if (!release.released) {
+    return { text: `PO ${command.poNumber} was approved but not released: ${friendlyReasons(release.reasons)}. The vendor has not received an order.` };
+  }
+  return {
+    text: `Released PO ${command.poNumber} to ${selected.vendorName} for ${formatUsd(selected.deliveredTotalCents)} delivered against quote ${selected.vendorQuoteRef}. The written PO was emailed and a receipt-confirmation call was queued. Status remains pending written vendor acknowledgement.`,
+  };
+}
+
+async function getLatestProcurementRequest(input: HandlerInput) {
+  const [latest] = await input.db.select().from(procurementRequests)
+    .where(eq(procurementRequests.requestedByContactId, input.contact.id))
+    .orderBy(desc(procurementRequests.createdAt)).limit(1);
+  return latest ?? null;
 }
 
 type HandlerInput = {
