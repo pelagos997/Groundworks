@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { normalizeForemanCall } from "../../../lib/nexla-data-products";
+import { deliverToNexla } from "../../../lib/nexla";
+import { getRuntimeEnv } from "../../../lib/runtime-env";
 
 type FieldEventRequest = { transcript?: string };
 
@@ -12,21 +14,7 @@ export async function POST(request: Request) {
   }
 
   const event = normalizeForemanCall(transcript);
-  const webhookUrl = process.env.NEXLA_FIELD_EVENTS_WEBHOOK_URL;
-  let nexlaStatus: "demo_replay" | "delivered" | "delivery_failed" = "demo_replay";
-
-  if (webhookUrl) {
-    try {
-      const response = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(event),
-      });
-      nexlaStatus = response.ok ? "delivered" : "delivery_failed";
-    } catch {
-      nexlaStatus = "delivery_failed";
-    }
-  }
+  const nexlaStatus = await deliverToNexla(getRuntimeEnv().NEXLA_FIELD_EVENTS_WEBHOOK_URL, event);
 
   return NextResponse.json({
     event,

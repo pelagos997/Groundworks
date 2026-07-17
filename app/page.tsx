@@ -38,7 +38,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BASE_TASKS,
   type ReplanEvent,
@@ -51,6 +51,7 @@ type CommunicationState =
   | "idle"
   | "discovering"
   | "calling"
+  | "queued"
   | "connected"
   | "confirmed"
   | "declined"
@@ -76,6 +77,23 @@ type ZeroDiscovery = {
   policy: "approval_required" | "eligible";
   receiptId: string;
   failedOver?: boolean;
+};
+
+type ContactStatus = {
+  provider: string;
+  number: string | null;
+  configured: boolean;
+  capabilities: { voice: boolean; sms: boolean; mms: boolean; privateMedia: boolean };
+  allowlistedContacts: number;
+  zeroLiveActions: boolean;
+  policy: { version: string };
+};
+
+type LiveInboundData = {
+  events: Array<{ id: string; elementId: string | null; condition: string | null; caller: string; confirmed: boolean; nexlaStatus: string; createdAt: string }>;
+  media: Array<{ id: string; elementId: string | null; caption: string | null; url: string; createdAt: string }>;
+  receipts: Array<{ id: string; outcome: string; provider: string; externalId: string | null; createdAt: string }>;
+  candidates: Array<{ commitId: string; status: string; result: ReplanResponse }>;
 };
 
 const weekDays = [
@@ -106,6 +124,20 @@ const initialFeed: ReplanResponse["feed"] = [
 
 function applyShifts(tasks: ScheduleTask[], shifts: Record<string, number>): ScheduleTask[] {
   return tasks.map((task) => ({ ...task, start: task.start + (shifts[task.id] ?? 0) }));
+}
+
+function tasksForCandidate(result: ReplanResponse) {
+  return applyShifts(BASE_TASKS, result.shifts).map((task) => ({
+    ...task,
+    newTime:
+      result.event === "hot_weather" && task.id === "DS07"
+        ? "05:00"
+        : result.event === "shaft_obstruction" && task.id === "DS09"
+          ? "RIG MOVES HERE"
+          : result.shifts[task.id]
+            ? `${result.shifts[task.id] > 0 ? "+" : ""}${result.shifts[task.id]}d`
+            : undefined,
+  }));
 }
 
 function toneClass(tone: ReplanResponse["feed"][number]["tone"]) {
@@ -182,6 +214,40 @@ export default function GroundworkDashboard() {
   const [showSetup, setShowSetup] = useState(false);
   const [setupStep, setSetupStep] = useState(1);
   const [showEvidence, setShowEvidence] = useState(false);
+  const [contactStatus, setContactStatus] = useState<ContactStatus | null>(null);
+  const [liveInbound, setLiveInbound] = useState<LiveInboundData | null>(null);
+  const syncedCandidate = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    async function refresh() {
+      const [statusResponse, eventsResponse] = await Promise.all([
+        fetch("/api/contact-status", { cache: "no-store" }),
+        fetch("/api/inbound-events", { cache: "no-store" }),
+      ]);
+      if (!active) return;
+      if (statusResponse.ok) setContactStatus(await statusResponse.json() as ContactStatus);
+      if (eventsResponse.ok) {
+        const incoming = await eventsResponse.json() as LiveInboundData;
+        setLiveInbound(incoming);
+        const latest = incoming.candidates.find((item) => item.status === "proposed");
+        if (latest && syncedCandidate.current !== latest.commitId) {
+          syncedCandidate.current = latest.commitId;
+          setCandidate(latest.result);
+          setTasks(tasksForCandidate(latest.result));
+          setActiveEvent(latest.result.trigger);
+          setFeed((current) => [
+            { step: "LIVE FIELD EVENT", detail: "A caller-confirmed event produced a new schedule candidate.", tone: "warning" },
+            ...latest.result.feed,
+            ...current.slice(0, 2),
+          ]);
+        }
+      }
+    }
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 12_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, []);
 
   const releaseDelta = candidate?.deltaDays ?? 0;
   const releaseLabel =
@@ -191,6 +257,12 @@ export default function GroundworkDashboard() {
     [candidate],
   );
   const isApproved = candidate ? committed === candidate.commitId : false;
+
+  function applyCandidate(result: ReplanResponse) {
+    setCandidate(result);
+    setTasks(tasksForCandidate(result));
+    setActiveEvent(result.trigger);
+  }
 
   async function runReplan(event: ReplanEvent) {
     setBusy(true);
@@ -203,22 +275,8 @@ export default function GroundworkDashboard() {
       });
       if (!response.ok) throw new Error("Replan failed");
       const result = (await response.json()) as ReplanResponse;
-      setCandidate(result);
-      setTasks(
-        applyShifts(BASE_TASKS, result.shifts).map((task) => ({
-          ...task,
-          newTime:
-            result.event === "hot_weather" && task.id === "DS07"
-              ? "05:00"
-              : result.event === "shaft_obstruction" && task.id === "DS09"
-                ? "RIG MOVES HERE"
-                : result.shifts[task.id]
-                  ? `${result.shifts[task.id] > 0 ? "+" : ""}${result.shifts[task.id]}d`
-                  : undefined,
-        })),
-      );
+      applyCandidate(result);
       setFeed(result.feed);
-      setActiveEvent(result.trigger);
       return result;
     } catch {
       setFeed((current) => [
@@ -302,18 +360,24 @@ export default function GroundworkDashboard() {
     }
   }
 
-  function approveCandidate() {
+  async function approveCandidate() {
     if (!candidate) return;
-    setCommitted(candidate.commitId);
-    setZeroActions((current) => current.map((item) => ({ ...item, policy: "eligible" })));
-    setFeed([
-      {
-        step: "COMMITTED",
-        detail: `${candidate.commitId} merged. Zero side effects are now eligible within the approved scope.`,
-        tone: "success",
-      },
-      ...candidate.feed,
-    ]);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/replans/approve", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ commitId: candidate.commitId, event: candidate.event }),
+      });
+      if (!response.ok) throw new Error("Approval failed");
+      setCommitted(candidate.commitId);
+      setZeroActions((current) => current.map((item) => ({ ...item, policy: "eligible" })));
+      setFeed([{ step: "COMMITTED", detail: `${candidate.commitId} was approved server-side. Consented Zero actions are now eligible.`, tone: "success" }, ...candidate.feed]);
+    } catch {
+      setFeed((current) => [{ step: "APPROVAL BLOCKED", detail: "The server could not persist this approval; external actions remain blocked.", tone: "danger" }, ...current]);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function rejectCandidate() {
@@ -355,23 +419,28 @@ export default function GroundworkDashboard() {
   }
 
   async function startCall() {
-    setCommunication("discovering");
+    if (!candidate) return;
+    setCommunication("calling");
     try {
-      const receipt = await discoverCapability("voice", true);
-      setCommunication("calling");
+      const response = await fetch("/api/actions/zero", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "voice", commitId: candidate.commitId, recipientId: "special_inspector_01" }),
+      });
+      const receipt = await response.json() as { receiptId?: string; provider?: string; outcome?: string; error?: string };
+      if (!response.ok) throw new Error(receipt.error ?? "Zero action failed");
+      setCommunication("queued");
       setFeed((current) => [
         {
-          step: "ZERO VOICE",
-          detail: receipt.selected
-            ? `${receipt.selected.name} selected at ${receipt.selected.price}; controlled demo call prepared.`
-            : "Voice discovery fallback prepared a controlled demo call.",
+          step: "ZERO EXECUTED",
+          detail: `${receipt.provider ?? "Zero provider"} queued a consented call. Receipt ${receipt.receiptId ?? "recorded"}.`,
           tone: "success",
         },
         ...current,
       ]);
-      window.setTimeout(() => setCommunication("connected"), 850);
     } catch {
       setCommunication("idle");
+      setFeed((current) => [{ step: "ZERO BLOCKED", detail: "The live action failed a configuration or policy gate; no call was placed and no retry was attempted.", tone: "danger" }, ...current]);
     }
   }
 
@@ -440,7 +509,7 @@ export default function GroundworkDashboard() {
           <div className="source-health">
             <span><i className="pulse" /> Nexla products current</span>
             <span><Database size={14} /> 5 normalized streams</span>
-            <span><PhoneIncoming size={14} /> hotline standing by</span>
+            <span><PhoneIncoming size={14} /> {contactStatus?.configured ? "voice + MMS line connected" : "phone setup required"}</span>
           </div>
         </div>
 
@@ -504,7 +573,7 @@ export default function GroundworkDashboard() {
                 <div><span className="candidate-label">Recommended recovery</span><strong>{candidate.recommendation}</strong><small>{candidate.rationale}</small></div>
                 <div className="candidate-actions">
                   <Button variant="tertiary" size="sm" onPress={rejectCandidate}>Reject</Button>
-                  <Button variant="primary" size="sm" onPress={approveCandidate} isDisabled={isApproved}><FileCheck2 size={15} /> {isApproved ? "Committed" : "Approve & commit"}</Button>
+                  <Button variant="primary" size="sm" onPress={() => void approveCandidate()} isDisabled={isApproved}><FileCheck2 size={15} /> {isApproved ? "Committed" : "Approve & commit"}</Button>
                 </div>
               </Card.Footer>
             )}
@@ -525,12 +594,20 @@ export default function GroundworkDashboard() {
           <Card className="hotline-card">
             <Card.Header className="card-heading">
               <div><Card.Title>Groundwork project hotline</Card.Title><Card.Description>Inbound field context becomes a caller-confirmed Nexla event</Card.Description></div>
-              <Chip size="sm" color={hotline === "ready" ? "success" : "accent"} variant="soft"><Chip.Label>{hotline === "ready" ? "STANDING BY" : "CALL ACTIVE"}</Chip.Label></Chip>
+              <Chip size="sm" color={contactStatus?.configured ? "success" : hotline === "ready" ? "warning" : "accent"} variant="soft"><Chip.Label>{contactStatus?.configured ? "LIVE CONTACT" : hotline === "ready" ? "REPLAY READY" : "CALL ACTIVE"}</Chip.Label></Chip>
             </Card.Header>
             <Card.Content className="hotline-content">
-              <div className="hotline-number"><span><PhoneIncoming size={17} /> PROJECT LINE · DEMO</span><strong>(415) 555-0148</strong></div>
+              <div className="hotline-number"><span><PhoneIncoming size={17} /> PROJECT LINE · {contactStatus?.configured ? contactStatus.provider.toUpperCase() : "NOT PROVISIONED"}</span><strong>{contactStatus?.number ?? "Configuration required"}</strong></div>
+              {contactStatus && <div className="contact-capabilities"><span><Phone size={13} /> Voice</span><span><MessageSquareText size={13} /> SMS</span><span><FileCheck2 size={13} /> MMS images</span><span><ShieldCheck size={13} /> {contactStatus.policy.version}</span></div>}
+              {liveInbound && (liveInbound.events[0] || liveInbound.media[0]) && (
+                <div className="live-intake">
+                  <div className="live-intake-head"><strong>Latest real inbound activity</strong><Chip size="sm" color="success" variant="soft"><Chip.Label>SIGNED + STORED</Chip.Label></Chip></div>
+                  {liveInbound.events[0] && <p><PhoneIncoming size={14} /><span><strong>{liveInbound.events[0].elementId ?? "Field report"}</strong>{liveInbound.events[0].condition ?? "observation"} · {liveInbound.events[0].caller} · Nexla {liveInbound.events[0].nexlaStatus}</span></p>}
+                  {liveInbound.media[0] && <div className="live-media-row"><div className="live-media-thumb" style={{ backgroundImage: `url(${liveInbound.media[0].url})` }} role="img" aria-label={liveInbound.media[0].caption ?? "Private field image"} /><span><strong>{liveInbound.media[0].elementId ?? "Unassigned image"}</strong>{liveInbound.media[0].caption ?? "Private field image received by MMS"}</span></div>}
+                </div>
+              )}
               {hotline === "ready" && (
-                <div className="hotline-empty"><div className="ready-ring"><Phone size={22} /></div><div><strong>Crews call a normal phone number</strong><p>Report production, delays, deliveries, inspection status, or equipment problems without opening an app.</p></div><Button variant="primary" size="sm" onPress={simulateIncomingCall}>Simulate inbound call</Button></div>
+                <div className="hotline-empty"><div className="ready-ring"><Phone size={22} /></div><div><strong>Crews call or text one project number</strong><p>Signed voice, SMS, and MMS events require consent, caller allowlisting, read-back confirmation, and superintendent approval.</p></div><Button variant="primary" size="sm" onPress={simulateIncomingCall}>Replay golden-path call</Button></div>
               )}
               {hotline === "ringing" && (
                 <div className="hotline-live"><span className="call-pulse"><PhoneIncoming size={18} /></span><div><strong>Incoming · Luis Martinez</strong><span>Caller matched crew_foreman_01 · project code verified</span></div><Spinner size="sm" color="accent" /></div>
@@ -593,6 +670,7 @@ export default function GroundworkDashboard() {
               {communication === "idle" && <div className="communication-empty"><Radio size={20} /><div><strong>No communication in progress</strong><span>Commit the candidate plan to unlock approved actions.</span></div></div>}
               {communication === "discovering" && <div className="communication-live"><Spinner size="sm" color="accent" /><div><strong>Zero is discovering a capability</strong><span>Checking provider health, rating, price, and schema…</span></div></div>}
               {communication === "calling" && <div className="communication-live"><span className="call-pulse"><Phone size={18} /></span><div><strong>Calling inspector…</strong><span>AI identity and recording disclosure queued</span></div></div>}
+              {communication === "queued" && <Alert status="success"><Alert.Indicator><Check size={16} /></Alert.Indicator><Alert.Content><Alert.Title>Zero call queued</Alert.Title><Alert.Description>The paid action passed consent, approved-plan, allowlist, and maxPay gates. Its receipt is in the audit log.</Alert.Description></Alert.Content></Alert>}
               {communication === "connected" && <div className="call-console"><div className="call-header"><span className="call-pulse"><Phone size={17} /></span><div><strong>Connected · 00:18</strong><span>“Can you cover the resequenced DS-03 inspection?”</span></div></div><div className="call-response-actions"><Button size="sm" variant="secondary" onPress={() => inspectorResponse("confirmed")}><Check size={14} /> Inspector confirms</Button><Button size="sm" variant="danger-soft" onPress={() => inspectorResponse("declined")}><X size={14} /> Inspector declines</Button></div></div>}
               {communication === "confirmed" && <Alert status="success"><Alert.Indicator><Check size={16} /></Alert.Indicator><Alert.Content><Alert.Title>Coverage confirmed</Alert.Title><Alert.Description>DS-03 inspection window read back and accepted.</Alert.Description></Alert.Content></Alert>}
               {communication === "declined" && <Alert status="warning"><Alert.Indicator><CircleAlert size={16} /></Alert.Indicator><Alert.Content><Alert.Title>Coverage declined</Alert.Title><Alert.Description>The response started another resource replan.</Alert.Description></Alert.Content></Alert>}
@@ -611,10 +689,10 @@ export default function GroundworkDashboard() {
             <Card.Header className="setup-header"><div><span className="setup-kicker">AGENT SETUP STUDIO</span><Card.Title>Initialize a superintendent</Card.Title><Card.Description>Drilled Shaft Superintendent v1 · shadow mode</Card.Description></div><Button isIconOnly variant="tertiary" onPress={() => setShowSetup(false)} aria-label="Close setup"><X size={18} /></Button></Card.Header>
             <Card.Content className="setup-content">
               <div className="setup-progress">{["Project", "Package", "Authority", "Simulate"].map((label, index) => <Button key={label} size="sm" variant="tertiary" className={setupStep === index + 1 ? "active" : setupStep > index + 1 ? "complete" : ""} onPress={() => setSetupStep(index + 1)}><span>{setupStep > index + 1 ? <Check size={13} /> : index + 1}</span>{label}</Button>)}</div>
-              {setupStep === 1 && <div className="setup-form"><div className="form-copy"><h3>Project context</h3><p>Create the versioned operating boundary for one drilled-shaft package.</p></div><label>Project name<Input fullWidth defaultValue="2nd & Howard Infill" aria-label="Project name" /></label><div className="form-grid"><label>Location<Input fullWidth defaultValue="SoMa, San Francisco" aria-label="Location" /></label><label>Project hotline<Input fullWidth defaultValue="(415) 555-0148 · demo" aria-label="Project hotline" /></label></div></div>}
+              {setupStep === 1 && <div className="setup-form"><div className="form-copy"><h3>Project context</h3><p>Create the versioned operating boundary for one drilled-shaft package.</p></div><label>Project name<Input fullWidth defaultValue="2nd & Howard Infill" aria-label="Project name" /></label><div className="form-grid"><label>Location<Input fullWidth defaultValue="SoMa, San Francisco" aria-label="Location" /></label><label>Project hotline<Input fullWidth value={contactStatus?.number ?? "Not provisioned"} readOnly aria-label="Project hotline" /></label></div></div>}
               {setupStep === 2 && <div className="setup-form"><div className="form-copy"><h3>Package + data products</h3><p>Attach the week plan, shaft elements, resources, and Nexla product contracts.</p></div><Alert status="accent"><Alert.Indicator><Layers3 size={16} /></Alert.Indicator><Alert.Content><Alert.Title>Six 72-inch drilled shafts</Alert.Title><Alert.Description>14 activities · 9 validation rules · 5 Nexla streams · 1 release milestone</Alert.Description></Alert.Content></Alert><div className="connection-list"><span><FileCheck2 size={16} /> Drilled shaft week plan <Chip size="sm" color="success" variant="soft"><Chip.Label>MAPPED</Chip.Label></Chip></span><span><Database size={16} /> Nexla field_events → schedule_events <Chip size="sm" color="success" variant="soft"><Chip.Label>ACTIVE</Chip.Label></Chip></span></div></div>}
-              {setupStep === 3 && <div className="setup-form"><div className="form-copy"><h3>Bounded authority</h3><p>Groundwork can observe and discover freely; external actions require explicit scope.</p></div><div className="authority-list"><span><Check size={15} /> Normalize caller-confirmed field events</span><span><Check size={15} /> Search Zero capability providers</span><span><Check size={15} /> Contact consented demo recipients after approval</span><span className="blocked"><X size={15} /> Direct safety or engineered means and methods</span><span className="blocked"><X size={15} /> Negotiate cost or authorize change orders</span></div></div>}
-              {setupStep === 4 && <div className="setup-form setup-ready"><div className="ready-icon"><ShieldCheck size={28} /></div><h3>Ready for shadow simulation</h3><p>The agent will replay the DS-02 obstruction call, normalize it through Nexla, discover Zero capabilities, and block every side effect until approval.</p><div className="simulation-summary"><span><strong>14</strong> activities</span><span><strong>9</strong> constraints</span><span><strong>4</strong> Zero searches</span></div></div>}
+              {setupStep === 3 && <div className="setup-form"><div className="form-copy"><h3>Bounded authority</h3><p>Policy {contactStatus?.policy.version ?? "groundwork-field-contact-v1.0"} defaults to deny and is enforced server-side.</p></div><div className="authority-list"><span><Check size={15} /> Accept signed reports and private images from allowlisted callers</span><span><Check size={15} /> Require voice consent and explicit factual read-back</span><span><Check size={15} /> Search and inspect Zero providers without spending</span><span><Check size={15} /> Execute only for approved plans and consented contacts under $0.60</span><span className="blocked"><X size={15} /> Engineering, safety, commercial, or means-and-methods direction</span><span className="blocked"><X size={15} /> Publish field images or contact arbitrary numbers</span></div></div>}
+              {setupStep === 4 && <div className="setup-form setup-ready"><div className="ready-icon"><ShieldCheck size={28} /></div><h3>{contactStatus?.configured ? "Inbound contact connected" : "Ready for secure provisioning"}</h3><p>{contactStatus?.configured ? "Voice, SMS, MMS, D1 audit records, private R2 images, Nexla events, and approval-gated Zero actions are connected." : "The webhook, storage, and policy paths are ready. AgentPhone credentials and a reachable public webhook complete provisioning."}</p><div className="simulation-summary"><span><strong>{contactStatus?.allowlistedContacts ?? 0}</strong> contacts</span><span><strong>9</strong> constraints</span><span><strong>$0.60</strong> Zero cap</span></div></div>}
             </Card.Content>
             <Card.Footer className="setup-footer"><span>Manifest: supt_shafts_soma_001</span><div>{setupStep > 1 && <Button variant="tertiary" size="sm" onPress={() => setSetupStep(setupStep - 1)}>Back</Button>}{setupStep < 4 ? <Button variant="primary" size="sm" onPress={() => setSetupStep(setupStep + 1)}>Continue <ChevronRight size={15} /></Button> : <Button variant="primary" size="sm" onPress={() => { setShowSetup(false); setFeed((current) => [{ step: "INITIALIZED", detail: "Drilled-shaft superintendent validated in shadow mode.", tone: "success" }, ...current]); }}><Play size={15} /> Run simulation</Button>}</div></Card.Footer>
           </Card>

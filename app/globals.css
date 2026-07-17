@@ -174,6 +174,15 @@ h1 { margin:0; font-size:clamp(28px,3vw,42px); line-height:1; letter-spacing:-.0
 .hotline-number strong, .hotline-number span { display:block; }
 .hotline-number strong { font-family:var(--font-geist-mono),monospace; font-size:13px; }
 .hotline-number span { margin-top:2px; color:var(--muted); font-size:9px; }
+.contact-capabilities { display:flex; flex-wrap:wrap; gap:7px 13px; margin:-2px 2px 12px; color:var(--muted); font-size:8px; }
+.contact-capabilities span { display:flex; align-items:center; gap:4px; }
+.live-intake { margin-bottom:12px; padding:11px; border:1px solid #cfe2d9; border-radius:10px; background:#f4faf7; }
+.live-intake-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.live-intake-head strong { font-size:10px; }
+.live-intake p { display:flex; align-items:flex-start; gap:7px; margin:0; color:var(--muted); font-size:9px; line-height:1.4; }
+.live-intake p strong, .live-media-row strong { display:block; color:var(--ink); font-size:10px; }
+.live-media-row { display:grid; grid-template-columns:54px 1fr; gap:9px; align-items:center; margin-top:8px; color:var(--muted); font-size:9px; }
+.live-media-thumb { width:54px; height:44px; border-radius:6px; background-size:cover; background-position:center; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
 .hotline-empty { min-height:235px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:13px; text-align:center; color:var(--muted); }
 .hotline-empty > div:not(.ready-ring) { display:flex; flex-direction:column; align-items:center; gap:7px; max-width:320px; }
 .hotline-empty strong { color:var(--ink); font-size:13px; }
