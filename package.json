@@ -18,6 +18,8 @@
     "@heroui/react": "^3.2.2",
     "@heroui/styles": "^3.2.2",
     "@langchain/langgraph": "^1.4.8",
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.110.7",
     "@zeroxyz/sdk": "^0.15.0",
     "drizzle-orm": "0.45.2",
     "lucide-react": "^0.468.0",

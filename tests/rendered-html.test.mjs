@@ -205,6 +205,21 @@ test("upserts redacted AgentPhone call records and transcript turns into Supabas
   }
 });
 
+test("keeps Supabase user sessions separate from the privileged call-data writer", async () => {
+  const [packageJson, sessionProxy, phoneStore] = await Promise.all([
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../utils/supabase/middleware.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/supabase-phone-data.ts", import.meta.url), "utf8"),
+  ]);
+
+  const dependencies = JSON.parse(packageJson).dependencies;
+  assert.ok(dependencies["@supabase/ssr"]);
+  assert.ok(dependencies["@supabase/supabase-js"]);
+  assert.match(sessionProxy, /auth\.getClaims\(\)/);
+  assert.match(phoneStore, /SUPABASE_SECRET_KEY/);
+  assert.doesNotMatch(phoneStore, /NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY/);
+});
+
 test("replan graph exposes each deterministic recovery scenario", async () => {
   for (const event of ["hot_weather", "inspector_cancelled", "crew_declined", "shaft_obstruction"]) {
     const response = await render("/api/replan", {

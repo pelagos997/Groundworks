@@ -105,6 +105,12 @@ server-only: the migration enables RLS, grants no browser role access, removes
 media and recording URLs from event payloads, and includes a 90-day purge
 function.
 
+The app also includes `@supabase/ssr` browser and server helpers for future
+authenticated client workflows. `proxy.ts` validates claims and refreshes auth
+cookies before rendering. Configure those clients with
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`; these
+public values never authorize writes to the protected phone tables.
+
 1. Create or select a Supabase project and apply
    `supabase/migrations/20260717220000_groundwork_phone_operations.sql` through
    the Supabase migration workflow.
