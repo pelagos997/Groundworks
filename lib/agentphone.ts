@@ -1,20 +1,23 @@
 import { z } from "zod";
 
-const HistorySchema = z.object({
-  content: z.string(),
-  direction: z.string(),
-  channel: z.string(),
-  at: z.string().optional(),
-}).passthrough();
+const ConversationStateSchema = z.preprocess(
+  (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null,
+  z.record(z.string(), z.unknown()).nullable(),
+);
+
+const RecentHistorySchema = z.preprocess(
+  (value) => Array.isArray(value) ? value : [],
+  z.array(z.unknown()),
+);
 
 export const AgentPhoneWebhookSchema = z.object({
   event: z.enum(["agent.message", "agent.call_ended", "agent.reaction"]),
   channel: z.enum(["voice", "sms", "mms", "imessage"]),
-  timestamp: z.string(),
+  timestamp: z.string().optional().default(""),
   agentId: z.string(),
   data: z.record(z.string(), z.unknown()),
-  conversationState: z.record(z.string(), z.unknown()).nullable().optional(),
-  recentHistory: z.array(HistorySchema).optional().default([]),
+  conversationState: ConversationStateSchema.optional().default(null),
+  recentHistory: RecentHistorySchema.optional().default([]),
 });
 
 export type AgentPhoneWebhook = z.infer<typeof AgentPhoneWebhookSchema>;

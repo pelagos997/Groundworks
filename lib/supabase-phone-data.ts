@@ -89,6 +89,7 @@ export async function recordAgentPhoneCallSnapshot(input: {
   if (!callId) throw new Error("AgentPhone call snapshot is missing an ID.");
   const projectId = input.runtime.GROUNDWORK_PROJECT_ID ?? DEFAULT_PHONE_PROJECT_ID;
   const state = objectValue(input.call, "conversationState", "conversation_state");
+  const rawDurationSeconds = numberValue(input.call, "durationSeconds", "duration_seconds", "duration");
   await supabaseUpsert(input.runtime, "phone_calls", [{
     provider_call_id: callId,
     project_id: projectId,
@@ -101,7 +102,7 @@ export async function recordAgentPhoneCallSnapshot(input: {
     status: stringValue(input.call, "status") ?? "unknown",
     started_at: timestampValue(input.call, "startedAt", "started_at", "createdAt", "created_at"),
     ended_at: timestampValue(input.call, "endedAt", "ended_at", "completedAt", "completed_at"),
-    duration_seconds: numberValue(input.call, "durationSeconds", "duration_seconds", "duration"),
+    duration_seconds: rawDurationSeconds === null ? null : Math.max(0, Math.round(rawDurationSeconds)),
     summary: stringValue(input.call, "summary"),
     disclosure_given: input.disclosureGiven ?? booleanValue(state, "disclosureAccepted", "disclosure_accepted") ?? false,
     transcription_consent: booleanValue(state, "transcriptionConsent", "transcription_consent") ?? input.disclosureGiven ?? false,

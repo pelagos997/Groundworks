@@ -10,6 +10,7 @@ import {
   resolveHpileVendors,
 } from "../lib/procurement.ts";
 import { evaluatePurchaseApproval, evaluateRfqSourcing, parseContacts } from "../lib/agent-policy.ts";
+import { AgentPhoneWebhookSchema } from "../lib/agentphone.ts";
 import { parsePurchaseApproval } from "../lib/purchase-command.ts";
 import { rankQuotes } from "../lib/quote-comparison.ts";
 import { recordAgentPhoneWebhook } from "../lib/supabase-phone-data.ts";
@@ -176,6 +177,27 @@ test("lets pre-authorized voice callers report naturally after the audible discl
   assert.match(route, /disclosureAccepted: true/);
 });
 
+test("accepts live voice envelopes with provider-specific history metadata", () => {
+  const parsed = AgentPhoneWebhookSchema.safeParse({
+    event: "agent.message",
+    channel: "voice",
+    agentId: "agt_groundwork",
+    data: {
+      callId: "call_live_001",
+      from: "+19132632336",
+      to: "+19133495671",
+      direction: "inbound",
+      status: "in-progress",
+      transcript: "I need two hundred HP12x53 piles at twenty feet.",
+    },
+    conversationState: [],
+    recentHistory: [{ role: "agent", content: null }, null],
+  });
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data.conversationState, null);
+  assert.equal(parsed.data.recentHistory.length, 2);
+});
+
 test("rejects an AgentPhone delivery with an invalid signature before processing", async () => {
   const response = await render(
     "/api/webhooks/agentphone",
@@ -251,6 +273,7 @@ test("upserts redacted AgentPhone call records and transcript turns into Supabas
           toNumber: "+19133495671",
           direction: "inbound",
           status: "completed",
+          durationSeconds: 44.74,
           mediaUrl: "https://agentphone.ai/private-recording",
           transcripts: [
             { role: "agent", content: "This is Groundwork, an AI assistant." },
@@ -267,6 +290,7 @@ test("upserts redacted AgentPhone call records and transcript turns into Supabas
     assert.equal(writes[0].body[0].payload.data.mediaUrl, "[redacted]");
     assert.match(writes[1].url, /phone_calls/);
     assert.equal(writes[1].body[0].disclosure_given, true);
+    assert.equal(writes[1].body[0].duration_seconds, 45);
     assert.match(writes[2].url, /phone_transcript_turns/);
     assert.equal(writes[2].body.length, 2);
   } finally {
