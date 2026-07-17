@@ -2,11 +2,12 @@ import { chmod, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const apiKey = process.env.AGENTPHONE_API_KEY;
+const agentId = process.env.AGENTPHONE_AGENT_ID;
 const publicUrl = process.env.GROUNDWORK_PUBLIC_URL;
 const secretFile = resolve(process.env.AGENTPHONE_WEBHOOK_SECRET_FILE ?? ".agentphone-webhook-secret");
 
-if (!apiKey || !publicUrl) {
-  throw new Error("AGENTPHONE_API_KEY and GROUNDWORK_PUBLIC_URL are required.");
+if (!apiKey || !agentId || !publicUrl) {
+  throw new Error("AGENTPHONE_API_KEY, AGENTPHONE_AGENT_ID, and GROUNDWORK_PUBLIC_URL are required.");
 }
 
 const webhookUrl = new URL("/api/webhooks/agentphone", publicUrl).toString();
@@ -31,7 +32,9 @@ if (!result.secret || typeof result.secret !== "string") {
 await writeFile(secretFile, `${result.secret}\n`, { mode: 0o600 });
 await chmod(secretFile, 0o600);
 
-const testResponse = await fetch("https://api.agentphone.ai/v1/webhooks/test", {
+const testUrl = new URL("https://api.agentphone.ai/v1/webhooks/test");
+testUrl.searchParams.set("agentId", agentId);
+const testResponse = await fetch(testUrl, {
   method: "POST",
   headers: { authorization: `Bearer ${apiKey}` },
 });
