@@ -1,11 +1,13 @@
 export type ReplanEvent =
   | "hot_weather"
   | "inspector_cancelled"
-  | "crew_declined";
+  | "crew_declined"
+  | "shaft_obstruction";
 
 export type ScheduleTask = {
   id: string;
   name: string;
+  description: string;
   meta: string;
   start: number;
   duration: number;
@@ -30,18 +32,130 @@ export type ReplanResponse = {
 };
 
 export const BASE_TASKS: ScheduleTask[] = [
-  { id: "G01", name: "Mobilize rig + platform", meta: "Crew · rig", start: 0, duration: 1, status: "complete" },
-  { id: "G02", name: "Pothole utilities + layout", meta: "Survey · utility clearance", start: 1, duration: 1, status: "complete" },
-  { id: "G03", name: "Verification pile MP-01", meta: "Inspector · grout", start: 2, duration: 0.75, status: "critical" },
-  { id: "G04", name: "Cure to test strength", meta: "Cylinder break ≥ 3,000 psi", start: 2.75, duration: 3, status: "critical" },
-  { id: "G05", name: "Verification load test", meta: "Lab · reaction frame", start: 5.75, duration: 0.75, status: "critical" },
-  { id: "G06", name: "Engineer acceptance", meta: "EOR hold point", start: 6.5, duration: 0.5, status: "critical" },
-  { id: "G07", name: "Production piles · Zone A", meta: "12 elements · inspector", start: 7, duration: 2.5, status: "critical" },
-  { id: "G08", name: "Production piles · Zone B", meta: "12 elements · inspector", start: 9.5, duration: 2.5, status: "critical" },
-  { id: "P01", name: "Stage cages + spoil boxes", meta: "Parallel prep", start: 6.75, duration: 2, status: "parallel" },
-  { id: "G09", name: "Trim piles + bearing plates", meta: "Survey hold point", start: 12, duration: 1.5, status: "critical" },
-  { id: "G10", name: "Form + reinforce caps", meta: "Cap CP-01 through CP-04", start: 13.5, duration: 2, status: "critical" },
-  { id: "G11", name: "Cap reinforcement inspection", meta: "Special inspector", start: 15.5, duration: 0.5, status: "critical" },
-  { id: "G12", name: "Place cap concrete", meta: "Batch slot · weather", start: 16, duration: 0.75, status: "critical" },
-  { id: "G13", name: "Cure + release excavation", meta: "Strength · EOR release", start: 16.75, duration: 2.25, status: "critical" },
+  {
+    id: "DS01",
+    name: "Accept working platform",
+    description: "Geotechnical user verifies platform elevation, drainage, and rig bearing condition before mobilization.",
+    meta: "Mon · Geotech hold point",
+    start: 0,
+    duration: 0.35,
+    status: "complete",
+  },
+  {
+    id: "DS02",
+    name: "Layout + utility clearance",
+    description: "Survey controls shaft centers and confirms the cleared drilling envelope against current utility marks.",
+    meta: "Mon · Survey + GC",
+    start: 0.35,
+    duration: 0.4,
+    status: "complete",
+  },
+  {
+    id: "DS03",
+    name: "Mobilize drill rig + casing",
+    description: "Walk the rotary rig onto the accepted platform and stage temporary casing, tooling, and slurry plant.",
+    meta: "Mon · Rig + operator",
+    start: 0.75,
+    duration: 0.45,
+    status: "complete",
+  },
+  {
+    id: "P01",
+    name: "Fabricate cages + CSL tubes",
+    description: "Complete reinforcing cages, centralizers, lifting points, and crosshole sonic logging tubes off the critical path.",
+    meta: "Mon–Tue · Rebar fabricator",
+    start: 0.2,
+    duration: 1.6,
+    status: "parallel",
+  },
+  {
+    id: "DS04",
+    name: "Excavate test shaft DS-01",
+    description: "Advance the 72-inch shaft through fill and dense sand to the design tip while logging strata and tooling response.",
+    meta: "Tue · 72-in shaft · Inspector",
+    start: 1.2,
+    duration: 0.75,
+    status: "critical",
+  },
+  {
+    id: "DS05",
+    name: "Clean base + inspect shaft",
+    description: "Clean sediment, verify tip elevation and verticality, and obtain special-inspector acceptance before cage placement.",
+    meta: "Tue · Inspector hold point",
+    start: 1.95,
+    duration: 0.35,
+    status: "critical",
+  },
+  {
+    id: "DS06",
+    name: "Set cage + instrumentation",
+    description: "Lift the reinforcing cage, secure CSL tubes, confirm cover, and record final top-of-cage elevation.",
+    meta: "Wed · Crane + ironworkers",
+    start: 2.3,
+    duration: 0.45,
+    status: "critical",
+  },
+  {
+    id: "DS07",
+    name: "Tremie concrete DS-01",
+    description: "Place concrete continuously from the shaft base, track theoretical versus actual volume, and maintain tremie embedment.",
+    meta: "Wed · 180 CY · Batch slot",
+    start: 2.75,
+    duration: 0.45,
+    status: "critical",
+  },
+  {
+    id: "P02",
+    name: "Spoil haul + slurry management",
+    description: "Cycle sealed spoil boxes, manage slurry properties, and keep the work zone clear for continuous drilling operations.",
+    meta: "Tue–Sat · Environmental",
+    start: 1.2,
+    duration: 4.6,
+    status: "parallel",
+  },
+  {
+    id: "DS08",
+    name: "Excavate production shaft DS-02",
+    description: "Drill the first production shaft using the accepted test-shaft means, logging groundwater and any obstructions.",
+    meta: "Thu · Rig crew + inspector",
+    start: 3.15,
+    duration: 0.85,
+    status: "critical",
+  },
+  {
+    id: "DS09",
+    name: "Excavate production shaft DS-03",
+    description: "Advance the second production shaft and keep it available as the approved resequencing target if DS-02 is blocked.",
+    meta: "Fri · Rig crew + inspector",
+    start: 4.05,
+    duration: 0.85,
+    status: "critical",
+  },
+  {
+    id: "DS10",
+    name: "Inspect, cage + concrete DS-02/03",
+    description: "Complete bottom acceptance, cage placement, and continuous tremie pours for both released production shafts.",
+    meta: "Fri–Sat · Inspector + batch",
+    start: 4.9,
+    duration: 1.05,
+    status: "critical",
+  },
+  {
+    id: "DS11",
+    name: "Cure monitoring + CSL baseline",
+    description: "Monitor early concrete strength and establish the crosshole sonic logging baseline without releasing acceptance early.",
+    meta: "Thu–Sun · Testing lab",
+    start: 3.2,
+    duration: 3.3,
+    status: "parallel",
+  },
+  {
+    id: "DS12",
+    name: "Cutoff + foundation release",
+    description: "Survey cutoff elevations, remove contaminated concrete, and issue the controlled release for pile-cap work.",
+    meta: "Sun · Survey + EOR release",
+    start: 6.5,
+    duration: 0.5,
+    status: "critical",
+  },
 ];

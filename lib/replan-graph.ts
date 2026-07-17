@@ -11,7 +11,7 @@ const FeedItem = z.object({
 const TestItem = z.object({ name: z.string(), passed: z.boolean() });
 
 const ReplanState = z.object({
-  event: z.enum(["hot_weather", "inspector_cancelled", "crew_declined"]),
+  event: z.enum(["hot_weather", "inspector_cancelled", "crew_declined", "shaft_obstruction"]),
   trigger: z.string(),
   recommendation: z.string(),
   rationale: z.string(),
@@ -38,16 +38,17 @@ const blankState = (event: ReplanEvent): GraphState => ({
 
 function normalize(state: GraphState): Partial<GraphState> {
   const triggers: Record<ReplanEvent, string> = {
-    hot_weather: "91°F during planned grout window",
-    inspector_cancelled: "Special inspector cancelled Friday",
-    crew_declined: "Crew unavailable at proposed 05:00 start",
+    hot_weather: "91°F during the planned DS-01 concrete window",
+    inspector_cancelled: "Special inspector cancelled the Tuesday shaft-bottom hold point",
+    crew_declined: "Drilled-shaft crew unavailable at the proposed 05:00 start",
+    shaft_obstruction: "DS-02 refusal at 34 feet reported by the foreman hotline",
   };
   return {
     trigger: triggers[state.event],
     feed: [
       {
-        step: "OBSERVED",
-        detail: `${triggers[state.event]}. Source normalized as a schedule event.`,
+        step: state.event === "shaft_obstruction" ? "NEXLA EVENT" : "OBSERVED",
+        detail: `${triggers[state.event]}. Normalized as groundwork.schedule_event.v1.`,
         tone: "warning",
       },
     ],
@@ -56,54 +57,60 @@ function normalize(state: GraphState): Partial<GraphState> {
 
 function assess(state: GraphState): Partial<GraphState> {
   const detail: Record<ReplanEvent, string> = {
-    hot_weather: "G08 has exposed grout placement after 11:00 and zero total float.",
-    inspector_cancelled: "G11 cannot release the cap pour and sits on the excavation-release path.",
-    crew_declined: "The approved 05:00 recovery is no longer resource-feasible.",
+    hot_weather: "DS07 reaches the concrete temperature threshold with zero total float.",
+    inspector_cancelled: "DS05 cannot release cage placement or the continuous tremie pour.",
+    crew_declined: "The approved early-start recovery is no longer resource-feasible.",
+    shaft_obstruction: "DS-02 is blocked, but DS-03 is cleared and uses the same rig, crew, and inspection window.",
   };
   return {
-    feed: [
-      ...state.feed,
-      { step: "IMPACT", detail: detail[state.event], tone: "danger" },
-    ],
+    feed: [...state.feed, { step: "IMPACT", detail: detail[state.event], tone: "danger" }],
   };
 }
 
 function propose(state: GraphState): Partial<GraphState> {
   if (state.event === "hot_weather") {
     return {
-      recommendation: "Start Zone B at 05:00 before the grout threshold is exceeded.",
-      rationale: "Preserves the Aug 10 excavation release with two crew-hours of proposed overtime.",
-      shifts: { G08: -0.25 },
+      recommendation: "Start the DS-01 tremie pour at 05:00 before the concrete threshold is exceeded.",
+      rationale: "Preserves Sunday foundation release while keeping the batch and inspection sequence intact.",
+      shifts: { DS07: -0.25 },
       deltaDays: 0,
       commitId: "replan-heat-001",
-      feed: [
-        ...state.feed,
-        { step: "SELECTED", detail: "05:00 start dominates Saturday work and a split placement.", tone: "neutral" },
-      ],
+      feed: [...state.feed, { step: "SELECTED", detail: "05:00 pour dominates a split placement or Saturday recovery.", tone: "neutral" }],
     };
   }
   if (state.event === "inspector_cancelled") {
     return {
-      recommendation: "Pull cage and spoil preparation forward; move cap inspection to Monday.",
-      rationale: "Keeps the crew productive and limits excavation-release impact to one day.",
-      shifts: { G11: 1, G12: 1, G13: 1 },
+      recommendation: "Pull cage checks and slurry maintenance forward; move the bottom inspection to Wednesday.",
+      rationale: "Keeps the crew productive but moves the controlled foundation release by one day.",
+      shifts: { DS05: 1, DS06: 1, DS07: 1, DS08: 1, DS09: 1, DS10: 1, DS12: 1 },
       deltaDays: 1,
       commitId: "replan-inspector-002",
+      feed: [...state.feed, { step: "SELECTED", detail: "Parallel prep fills Tuesday; inspected shaft work resumes Wednesday.", tone: "neutral" }],
+    };
+  }
+  if (state.event === "shaft_obstruction") {
+    return {
+      recommendation: "Hold DS-02 for engineering review and move the rig to released shaft DS-03.",
+      rationale: "Swapping the production-shaft order contains the obstruction without moving Sunday foundation release.",
+      shifts: { DS08: 1, DS09: -0.9 },
+      deltaDays: 0,
+      commitId: "replan-obstruction-004",
       feed: [
         ...state.feed,
-        { step: "SELECTED", detail: "Parallel prep fills Friday; inspected work resumes Monday.", tone: "neutral" },
+        { step: "SELECTED", detail: "DS-03 is the only released alternate with matching tooling and inspection coverage.", tone: "neutral" },
+        { step: "ZERO SEARCH", detail: "Discovering weather, SMS, voice, and email capabilities for the response cascade.", tone: "neutral" },
       ],
     };
   }
   return {
     recommendation: "Move the crew start to 06:30 and compress the spoil-box exchange.",
     rationale: "Uses the foreman’s stated availability while containing downstream impact to half a day.",
-    shifts: { G08: 0.5, G09: 0.5, G10: 0.5, G11: 0.5, G12: 0.5, G13: 0.5 },
+    shifts: { DS07: 0.5, DS08: 0.5, DS09: 0.5, DS10: 0.5, DS12: 0.5 },
     deltaDays: 0.5,
     commitId: "replan-crew-003",
     feed: [
       ...state.feed,
-      { step: "SELF-CORRECT", detail: "Voice response invalidated the first resource assumption.", tone: "warning" },
+      { step: "SELF-CORRECT", detail: "Voice response invalidated the early-start resource assumption.", tone: "warning" },
       { step: "SELECTED", detail: "06:30 crew start with compressed material handling.", tone: "neutral" },
     ],
   };
@@ -112,12 +119,12 @@ function propose(state: GraphState): Partial<GraphState> {
 function validate(state: GraphState): Partial<GraphState> {
   const testNames = [
     "Acyclic schedule graph",
-    "Hold points honored",
-    "Verification before production",
-    "Crew and rig not double-booked",
+    "Shaft-bottom hold points honored",
+    "Cage released before concrete",
+    "Rig and crane not double-booked",
     "Inspector calendar satisfied",
-    "Environmental threshold satisfied",
-    "Field progress human-verified",
+    "Concrete threshold satisfied",
+    "Field event caller-confirmed",
     "Authority scope valid",
     "Critical path recalculated",
   ];
@@ -125,7 +132,7 @@ function validate(state: GraphState): Partial<GraphState> {
     tests: testNames.map((name) => ({ name, passed: true })),
     feed: [
       ...state.feed,
-      { step: "VALIDATED", detail: "9/9 deterministic schedule tests passed.", tone: "success" },
+      { step: "VALIDATED", detail: "9/9 drilled-shaft schedule tests passed.", tone: "success" },
       { step: "AWAITING APPROVAL", detail: "Candidate is safe to merge; external actions remain blocked.", tone: "neutral" },
     ],
   };

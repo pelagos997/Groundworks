@@ -13,22 +13,29 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Groundwork · Geotechnical Package Control",
+  metadataBase: new URL("https://groundwork-field-ops.jonanrones.chatgpt.site"),
+  title: "Groundwork · Drilled Shaft Superintendent",
   description:
-    "A self-rescheduling superintendent for schedule-critical geotechnical work.",
+    "A phone-first, self-rescheduling superintendent for drilled-shaft field operations.",
   openGraph: {
-    title: "Groundwork · The Self-Rescheduling Superintendent",
+    title: "Groundwork · Call the Superintendent",
     description:
-      "Agentic schedule control for critical geotechnical field operations.",
+      "Field crews call in changes. Groundwork verifies, replans, and coordinates the drilled-shaft week.",
     type: "website",
     images: [
       {
         url: "/og.png",
-        width: 1731,
-        height: 909,
-        alt: "Groundwork geotechnical superintendent control room",
+        width: 1200,
+        height: 630,
+        alt: "Groundwork drilled shaft superintendent control room",
       },
     ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Groundwork · Call the Superintendent",
+    description: "A phone-first agent for drilled-shaft field operations.",
+    images: ["/og.png"],
   },
 };
 
